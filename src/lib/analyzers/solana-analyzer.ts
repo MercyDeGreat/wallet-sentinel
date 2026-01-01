@@ -561,10 +561,10 @@ export class SolanaAnalyzer {
         },
       ],
       securityChecklist: [
-        { id: '1', category: 'Wallet', item: 'Use hardware wallet for significant holdings', completed: false, chainSpecific: ['solana'] },
+        { id: '1', category: 'Wallet', item: 'Use hardware wallet for significant holdings', completed: false, chainSpecific: ['solana'] as Chain[] },
         { id: '2', category: 'Wallet', item: 'Backup seed phrase securely offline', completed: false },
-        { id: '3', category: 'Transactions', item: 'Verify program IDs before signing', completed: false, chainSpecific: ['solana'] },
-        { id: '4', category: 'Tokens', item: 'Close unused token accounts', completed: false, chainSpecific: ['solana'] },
+        { id: '3', category: 'Transactions', item: 'Verify program IDs before signing', completed: false, chainSpecific: ['solana'] as Chain[] },
+        { id: '4', category: 'Tokens', item: 'Close unused token accounts', completed: false, chainSpecific: ['solana'] as Chain[] },
         { id: '5', category: 'Security', item: 'Avoid clicking airdrop links', completed: false },
       ],
     };

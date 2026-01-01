@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
 
     // EVM simulation
     const config = CHAIN_RPC_CONFIG[chain];
-    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
+    const provider = new ethers.JsonRpcProvider(config.rpcUrls[0]);
 
     // Simulate the transaction using eth_call
     const txRequest = {
