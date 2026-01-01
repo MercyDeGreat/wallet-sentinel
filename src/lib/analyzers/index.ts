@@ -30,3 +30,4 @@ export async function analyzeWallet(
   return analyzer.analyzeWallet(address);
 }
 
+

@@ -379,3 +379,4 @@ export function generateAnalysisSummary(
   return `URGENT: ${criticalThreats.length} critical security threat${criticalThreats.length > 1 ? 's' : ''} detected. Immediate action recommended. Review the recovery plan below to protect remaining assets.`;
 }
 
+

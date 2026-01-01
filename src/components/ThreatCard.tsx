@@ -239,3 +239,4 @@ function SeverityBadge({ severity }: { severity: RiskLevel }) {
   );
 }
 
+
