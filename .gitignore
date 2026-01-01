@@ -39,3 +39,7 @@ next-env.d.ts
 # Misc
 *.log
 .cache/
+
+# Deployment
+deploy/
+iisnode/

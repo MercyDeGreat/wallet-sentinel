@@ -3,15 +3,27 @@
 const nextConfig = {
   reactStrictMode: true,
   
-  // Disable source maps in production to prevent code inspection
+  // ============================================
+  // CODE PROTECTION SETTINGS
+  // ============================================
+  
+  // Disable source maps in production - prevents reverse engineering
   productionBrowserSourceMaps: false,
   
-  // Minification provides basic code protection
+  // Enable SWC minification - obfuscates variable names
   swcMinify: true,
+  
+  // Standalone output for SmarterASP.NET / IISNode deployment
+  output: 'standalone',
+  
+  // Compress output
+  compress: true,
+  
+  // Disable x-powered-by header
+  poweredByHeader: false,
   
   images: {
     domains: ['raw.githubusercontent.com', 'assets.coingecko.com'],
-    // Use unoptimized images for Cloudflare Pages
     unoptimized: true,
   },
   
@@ -24,12 +36,24 @@ const nextConfig = {
           { key: 'Access-Control-Allow-Origin', value: '*' },
           { key: 'Access-Control-Allow-Methods', value: 'GET,POST,OPTIONS' },
           { key: 'Access-Control-Allow-Headers', value: 'Content-Type' },
+          // Security headers
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+        ],
+      },
+      {
+        source: '/:path*',
+        headers: [
+          // Prevent caching of HTML to ensure users get latest version
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'X-XSS-Protection', value: '1; mode=block' },
         ],
       },
     ];
   },
   
-  webpack: (config, { isServer }) => {
+  webpack: (config, { isServer, dev }) => {
     // Handle missing modules for WalletConnect/MetaMask SDK
     if (!isServer) {
       config.resolve.fallback = {
@@ -38,17 +62,25 @@ const nextConfig = {
         'lokijs': false,
       };
       
-      // Properly ignore react-native-async-storage
       config.resolve.alias = {
         ...config.resolve.alias,
         '@react-native-async-storage/async-storage': false,
       };
     }
     
+    // Production optimizations
+    if (!dev) {
+      // Minimize chunk names for obfuscation
+      config.optimization = {
+        ...config.optimization,
+        moduleIds: 'deterministic',
+        chunkIds: 'deterministic',
+      };
+    }
+    
     return config;
   },
   
-  // Enable experimental optimizations
   experimental: {
     optimizePackageImports: ['lucide-react', 'framer-motion'],
   },

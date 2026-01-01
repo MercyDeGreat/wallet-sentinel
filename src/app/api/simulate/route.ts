@@ -5,8 +5,10 @@
 // Simulates a recovery transaction to check for drainer interception.
 // This is a READ-ONLY operation that does not execute transactions.
 
-// Required for Cloudflare Pages
-export const runtime = 'edge';
+// Use Node.js runtime for SmarterASP.NET (IISNode)
+// For Cloudflare Pages, change to: export const runtime = 'edge';
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ethers } from 'ethers';
