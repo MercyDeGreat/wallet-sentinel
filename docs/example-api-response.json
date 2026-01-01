@@ -1,0 +1,255 @@
+{
+  "success": true,
+  "data": {
+    "address": "0x742d35cc6634c0532925a3b844bc9e7595f5c123",
+    "chain": "ethereum",
+    "timestamp": "2024-01-15T12:30:45.123Z",
+    "securityStatus": "AT_RISK",
+    "riskScore": 65,
+    "summary": "2 potential security concerns detected. Review the identified risks below and consider taking preventive action.",
+    "detectedThreats": [
+      {
+        "id": "approval-drain-1705323045123",
+        "type": "APPROVAL_HIJACK",
+        "severity": "HIGH",
+        "title": "Approval Abuse Detected",
+        "description": "An approval was granted and immediately used to transfer assets. This is a common drainer pattern.",
+        "technicalDetails": "Approval TX: 0xabc123..., Drain TXs: 0xdef456...",
+        "detectedAt": "2024-01-15T12:30:45.123Z",
+        "relatedAddresses": [
+          "0x1234567890abcdef1234567890abcdef12345678",
+          "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+        ],
+        "relatedTransactions": [
+          "0xabc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+          "0xdef456abc123def456abc123def456abc123def456abc123def456abc123def4"
+        ],
+        "ongoingRisk": true,
+        "recoverableAssets": []
+      },
+      {
+        "id": "malicious-approval-approval-0x789",
+        "type": "APPROVAL_HIJACK",
+        "severity": "CRITICAL",
+        "title": "Active Approval to Malicious Contract",
+        "description": "You have an active approval allowing a known malicious contract to spend your USDC tokens.",
+        "technicalDetails": "Token: 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48, Spender: 0x1234567890abcdef1234567890abcdef12345678",
+        "detectedAt": "2024-01-15T12:30:45.123Z",
+        "relatedAddresses": [
+          "0x1234567890abcdef1234567890abcdef12345678"
+        ],
+        "relatedTransactions": [],
+        "ongoingRisk": true,
+        "recoverableAssets": []
+      }
+    ],
+    "approvals": [
+      {
+        "id": "approval-0x789abc",
+        "token": {
+          "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "symbol": "USDC",
+          "name": "USD Coin",
+          "decimals": 6,
+          "standard": "ERC20",
+          "verified": true
+        },
+        "spender": "0x1234567890abcdef1234567890abcdef12345678",
+        "spenderLabel": "Unknown Contract",
+        "amount": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "isUnlimited": true,
+        "riskLevel": "CRITICAL",
+        "riskReason": "Approved spender is a known malicious contract",
+        "grantedAt": "2024-01-10T08:15:30.000Z",
+        "isMalicious": true
+      },
+      {
+        "id": "approval-0x456def",
+        "token": {
+          "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+          "symbol": "USDT",
+          "name": "Tether USD",
+          "decimals": 6,
+          "standard": "ERC20",
+          "verified": true
+        },
+        "spender": "0x7a250d5630b4cf539739df2c5dacb4c659f2488d",
+        "spenderLabel": "Uniswap V2 Router",
+        "amount": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "isUnlimited": true,
+        "riskLevel": "HIGH",
+        "riskReason": "Unlimited approval amount - spender can drain all tokens",
+        "grantedAt": "2024-01-05T14:22:10.000Z",
+        "isMalicious": false
+      }
+    ],
+    "suspiciousTransactions": [
+      {
+        "hash": "0xabc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+        "timestamp": "2024-01-10T08:20:00.000Z",
+        "type": "APPROVAL_HIJACK",
+        "from": "0x742d35cc6634c0532925a3b844bc9e7595f5c123",
+        "to": "0x1234567890abcdef1234567890abcdef12345678",
+        "value": "0",
+        "riskLevel": "HIGH",
+        "flags": [
+          "Approval Abuse Detected"
+        ],
+        "description": "An approval was granted and immediately used to transfer assets."
+      }
+    ],
+    "recommendations": [
+      {
+        "id": "revoke-approvals",
+        "priority": "CRITICAL",
+        "category": "IMMEDIATE",
+        "title": "Revoke High-Risk Token Approvals",
+        "description": "You have 2 high-risk approvals that should be revoked immediately to prevent unauthorized token transfers.",
+        "actionable": true,
+        "actionType": "REVOKE_APPROVAL"
+      },
+      {
+        "id": "move-assets",
+        "priority": "HIGH",
+        "category": "IMMEDIATE",
+        "title": "Consider Moving Assets to Safe Wallet",
+        "description": "Due to the detected threats, consider transferring remaining assets to a fresh, secure wallet.",
+        "actionable": true,
+        "actionType": "TRANSFER_ASSETS"
+      },
+      {
+        "id": "audit-signatures",
+        "priority": "MEDIUM",
+        "category": "SHORT_TERM",
+        "title": "Audit Recent Signature Requests",
+        "description": "Review any recent signature requests you approved. Malicious signatures can be used even without on-chain transactions.",
+        "actionable": false
+      },
+      {
+        "id": "regular-audits",
+        "priority": "LOW",
+        "category": "LONG_TERM",
+        "title": "Schedule Regular Security Audits",
+        "description": "Periodically review your wallet approvals and transaction history to catch potential threats early.",
+        "actionable": false
+      }
+    ],
+    "recoveryPlan": {
+      "urgencyLevel": "HIGH",
+      "estimatedTimeMinutes": 15,
+      "steps": [
+        {
+          "order": 1,
+          "title": "Revoke Malicious Approvals",
+          "description": "Revoke 1 approval to known malicious contracts. This is the highest priority.",
+          "action": {
+            "type": "REVOKE_APPROVAL",
+            "contractAddress": "0x1234567890abcdef1234567890abcdef12345678",
+            "tokenAddress": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+          },
+          "priority": "IMMEDIATE"
+        },
+        {
+          "order": 2,
+          "title": "Revoke High-Risk Approvals",
+          "description": "Revoke 1 high-risk approval including unlimited token approvals.",
+          "action": {
+            "type": "REVOKE_APPROVAL"
+          },
+          "priority": "HIGH"
+        },
+        {
+          "order": 3,
+          "title": "Transfer Assets to Safe Wallet",
+          "description": "Move all remaining assets to a fresh wallet that has never been used before. Do NOT reuse the seed phrase.",
+          "action": {
+            "type": "TRANSFER_ASSETS"
+          },
+          "priority": "HIGH"
+        }
+      ],
+      "warnings": [
+        "Never share your seed phrase or private key with anyone",
+        "Verify all transaction details before signing",
+        "Be cautious of phishing sites mimicking recovery tools"
+      ],
+      "safeWalletRequired": true
+    },
+    "educationalContent": {
+      "attackExplanation": {
+        "whatHappened": "An approval hijack occurs when a malicious actor gains the ability to spend your tokens through a token approval you granted.",
+        "howItWorks": "When you approve a contract to spend tokens, you give it permission to transfer tokens on your behalf. Attackers exploit this by: 1) Creating fake dApps that request approvals, 2) Phishing sites that mimic legitimate protocols, 3) Compromised legitimate protocols.",
+        "ongoingDamage": "The approved contract can drain your tokens at any time until the approval is revoked.",
+        "recoverableInfo": "Revoke the malicious approval immediately. Any tokens already stolen cannot be recovered."
+      },
+      "preventionTips": [
+        {
+          "title": "Never share your seed phrase",
+          "description": "No legitimate service will ever ask for your seed phrase. Anyone asking for it is trying to steal your funds.",
+          "importance": "CRITICAL"
+        },
+        {
+          "title": "Use hardware wallets for high-value assets",
+          "description": "Hardware wallets keep your private keys offline, making them much harder to steal.",
+          "importance": "HIGH"
+        },
+        {
+          "title": "Review before signing",
+          "description": "Always carefully review what you are signing. Use transaction simulation tools when available.",
+          "importance": "HIGH"
+        },
+        {
+          "title": "Limit token approvals",
+          "description": "Only approve the exact amount needed, not unlimited. Regularly review and revoke old approvals.",
+          "importance": "MEDIUM"
+        }
+      ],
+      "securityChecklist": [
+        {
+          "id": "1",
+          "category": "Wallet Security",
+          "item": "Use a hardware wallet for significant holdings",
+          "completed": false
+        },
+        {
+          "id": "2",
+          "category": "Wallet Security",
+          "item": "Backup seed phrase in secure offline location",
+          "completed": false
+        },
+        {
+          "id": "3",
+          "category": "Approvals",
+          "item": "Review and revoke unnecessary token approvals monthly",
+          "completed": false
+        },
+        {
+          "id": "4",
+          "category": "Transactions",
+          "item": "Verify contract addresses before interacting",
+          "completed": false
+        },
+        {
+          "id": "5",
+          "category": "Transactions",
+          "item": "Use transaction simulation before signing",
+          "completed": false
+        },
+        {
+          "id": "6",
+          "category": "Browser Security",
+          "item": "Use dedicated browser profile for crypto",
+          "completed": false
+        },
+        {
+          "id": "7",
+          "category": "Browser Security",
+          "item": "Disable browser extensions when signing transactions",
+          "completed": false
+        }
+      ]
+    }
+  },
+  "timestamp": "2024-01-15T12:30:45.500Z"
+}
+

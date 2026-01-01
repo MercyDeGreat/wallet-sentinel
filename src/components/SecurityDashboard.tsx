@@ -1,0 +1,501 @@
+'use client';
+
+import { useState } from 'react';
+import { motion } from 'framer-motion';
+import {
+  Shield,
+  AlertTriangle,
+  AlertCircle,
+  CheckCircle,
+  ExternalLink,
+  Copy,
+  ChevronRight,
+  Clock,
+  TrendingUp,
+  Layers,
+} from 'lucide-react';
+import { WalletAnalysisResult, SecurityStatus, RiskLevel } from '@/types';
+import { ThreatCard } from './ThreatCard';
+import { ApprovalsDashboard } from './ApprovalsDashboard';
+import { RecoveryPlan } from './RecoveryPlan';
+import { EducationalPanel } from './EducationalPanel';
+
+interface SecurityDashboardProps {
+  result: WalletAnalysisResult;
+}
+
+type Tab = 'overview' | 'threats' | 'approvals' | 'recovery' | 'education';
+
+export function SecurityDashboard({ result }: SecurityDashboardProps) {
+  const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const [copied, setCopied] = useState(false);
+
+  const copyAddress = () => {
+    navigator.clipboard.writeText(result.address);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const tabs: { id: Tab; label: string; count?: number }[] = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'threats', label: 'Threats', count: result.detectedThreats.length },
+    { id: 'approvals', label: 'Approvals', count: result.approvals.length },
+    { id: 'recovery', label: 'Recovery' },
+    { id: 'education', label: 'Learn' },
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* Status Header */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className={`glass-card rounded-2xl p-6 ${getStatusBorderClass(result.securityStatus)}`}
+      >
+        <div className="flex flex-col md:flex-row md:items-center gap-4">
+          {/* Status Badge */}
+          <StatusBadge status={result.securityStatus} />
+
+          {/* Wallet Info */}
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-mono text-sm text-sentinel-muted truncate max-w-[300px]">
+                {result.address}
+              </span>
+              <button
+                onClick={copyAddress}
+                className="p-1 hover:bg-sentinel-surface rounded transition-colors"
+                title={copied ? 'Copied!' : 'Copy address'}
+              >
+                {copied ? (
+                  <CheckCircle className="w-4 h-4 text-status-safe" />
+                ) : (
+                  <Copy className="w-4 h-4 text-sentinel-muted" />
+                )}
+              </button>
+              <a
+                href={getExplorerUrl(result.chain, result.address)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-1 hover:bg-sentinel-surface rounded transition-colors"
+                title="View on explorer"
+              >
+                <ExternalLink className="w-4 h-4 text-sentinel-muted" />
+              </a>
+            </div>
+            <p className="text-sentinel-text">{result.summary}</p>
+          </div>
+
+          {/* Risk Score */}
+          <div className="flex flex-col items-end">
+            <div className="text-sm text-sentinel-muted mb-1">Risk Score</div>
+            <div className="flex items-center gap-2">
+              <RiskMeter score={result.riskScore} />
+              <span className={`text-2xl font-bold ${getRiskScoreColor(result.riskScore)}`}>
+                {result.riskScore}
+              </span>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Quick Stats */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+        className="grid grid-cols-2 md:grid-cols-4 gap-4"
+      >
+        <StatCard
+          icon={<AlertTriangle className="w-5 h-5" />}
+          label="Active Threats"
+          value={result.detectedThreats.filter((t) => t.ongoingRisk).length}
+          color={result.detectedThreats.filter((t) => t.ongoingRisk).length > 0 ? 'danger' : 'safe'}
+        />
+        <StatCard
+          icon={<Layers className="w-5 h-5" />}
+          label="Token Approvals"
+          value={result.approvals.length}
+          color={result.approvals.filter((a) => a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL').length > 0 ? 'warning' : 'info'}
+        />
+        <StatCard
+          icon={<AlertCircle className="w-5 h-5" />}
+          label="High Risk Approvals"
+          value={result.approvals.filter((a) => a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL').length}
+          color={result.approvals.filter((a) => a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL').length > 0 ? 'danger' : 'safe'}
+        />
+        <StatCard
+          icon={<Clock className="w-5 h-5" />}
+          label="Analysis Time"
+          value={new Date(result.timestamp).toLocaleTimeString()}
+          color="info"
+          isText
+        />
+      </motion.div>
+
+      {/* Navigation Tabs */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2 }}
+        className="flex gap-2 overflow-x-auto pb-2"
+      >
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg whitespace-nowrap transition-all ${
+              activeTab === tab.id
+                ? 'bg-sentinel-primary text-white'
+                : 'bg-sentinel-surface hover:bg-sentinel-elevated text-sentinel-text'
+            }`}
+          >
+            {tab.label}
+            {tab.count !== undefined && tab.count > 0 && (
+              <span className={`px-2 py-0.5 rounded-full text-xs ${
+                activeTab === tab.id
+                  ? 'bg-white/20'
+                  : 'bg-sentinel-border'
+              }`}>
+                {tab.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </motion.div>
+
+      {/* Tab Content */}
+      <motion.div
+        key={activeTab}
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+      >
+        {activeTab === 'overview' && (
+          <OverviewTab result={result} onNavigate={setActiveTab} />
+        )}
+        {activeTab === 'threats' && (
+          <div className="space-y-4">
+            {result.detectedThreats.length === 0 ? (
+              <EmptyState
+                icon={<Shield className="w-12 h-12 text-status-safe" />}
+                title="No Threats Detected"
+                description="No known security threats were found for this wallet."
+              />
+            ) : (
+              result.detectedThreats.map((threat) => (
+                <ThreatCard key={threat.id} threat={threat} chain={result.chain} />
+              ))
+            )}
+          </div>
+        )}
+        {activeTab === 'approvals' && (
+          <ApprovalsDashboard approvals={result.approvals} chain={result.chain} />
+        )}
+        {activeTab === 'recovery' && (
+          <RecoveryPlan plan={result.recoveryPlan} recommendations={result.recommendations} />
+        )}
+        {activeTab === 'education' && (
+          <EducationalPanel content={result.educationalContent} chain={result.chain} />
+        )}
+      </motion.div>
+    </div>
+  );
+}
+
+function OverviewTab({
+  result,
+  onNavigate,
+}: {
+  result: WalletAnalysisResult;
+  onNavigate: (tab: Tab) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Critical Actions */}
+      {result.securityStatus !== 'SAFE' && (
+        <div className="lg:col-span-2">
+          <div className="glass-card rounded-xl p-6 border-l-4 border-status-danger">
+            <h3 className="font-display font-semibold text-lg mb-4 flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-status-danger" />
+              Recommended Actions
+            </h3>
+            <div className="space-y-3">
+              {result.recommendations
+                .filter((r) => r.category === 'IMMEDIATE')
+                .slice(0, 3)
+                .map((rec) => (
+                  <div
+                    key={rec.id}
+                    className="flex items-center gap-3 p-3 bg-sentinel-surface rounded-lg"
+                  >
+                    <div className={`w-2 h-2 rounded-full ${getPriorityColor(rec.priority)}`} />
+                    <div className="flex-1">
+                      <div className="font-medium text-sm">{rec.title}</div>
+                      <div className="text-xs text-sentinel-muted">{rec.description}</div>
+                    </div>
+                    {rec.actionable && (
+                      <button
+                        onClick={() => onNavigate('recovery')}
+                        className="px-3 py-1 text-xs bg-sentinel-primary text-white rounded hover:bg-blue-500 transition-colors"
+                      >
+                        Take Action
+                      </button>
+                    )}
+                  </div>
+                ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Threats Summary */}
+      <div className="glass-card rounded-xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display font-semibold">Detected Threats</h3>
+          {result.detectedThreats.length > 0 && (
+            <button
+              onClick={() => onNavigate('threats')}
+              className="text-sm text-blue-400 hover:text-blue-300 flex items-center gap-1"
+            >
+              View All <ChevronRight className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+        {result.detectedThreats.length === 0 ? (
+          <div className="text-center py-8">
+            <CheckCircle className="w-12 h-12 text-status-safe mx-auto mb-3" />
+            <p className="text-sentinel-muted">No threats detected</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {result.detectedThreats.slice(0, 3).map((threat) => (
+              <div
+                key={threat.id}
+                className="flex items-center gap-3 p-3 bg-sentinel-surface rounded-lg"
+              >
+                <div className={`w-2 h-2 rounded-full ${getSeverityDotColor(threat.severity)}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm truncate">{threat.title}</div>
+                  <div className="text-xs text-sentinel-muted">{threat.type.replace(/_/g, ' ')}</div>
+                </div>
+                {threat.ongoingRisk && (
+                  <span className="px-2 py-1 text-xs bg-status-danger-bg text-status-danger rounded">
+                    Active
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Approvals Summary */}
+      <div className="glass-card rounded-xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display font-semibold">Token Approvals</h3>
+          {result.approvals.length > 0 && (
+            <button
+              onClick={() => onNavigate('approvals')}
+              className="text-sm text-blue-400 hover:text-blue-300 flex items-center gap-1"
+            >
+              Manage <ChevronRight className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+        {result.approvals.length === 0 ? (
+          <div className="text-center py-8">
+            <Shield className="w-12 h-12 text-status-safe mx-auto mb-3" />
+            <p className="text-sentinel-muted">No active approvals</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {result.approvals.slice(0, 4).map((approval) => (
+              <div
+                key={approval.id}
+                className="flex items-center gap-3 p-3 bg-sentinel-surface rounded-lg"
+              >
+                <div className={`w-2 h-2 rounded-full ${getSeverityDotColor(approval.riskLevel)}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm truncate">{approval.token.symbol}</div>
+                  <div className="text-xs text-sentinel-muted font-mono truncate">
+                    {approval.spender.slice(0, 10)}...{approval.spender.slice(-8)}
+                  </div>
+                </div>
+                {approval.isUnlimited && (
+                  <span className="px-2 py-1 text-xs bg-status-warning-bg text-status-warning rounded">
+                    Unlimited
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: SecurityStatus }) {
+  const config = {
+    SAFE: {
+      icon: CheckCircle,
+      label: 'SAFE',
+      bg: 'bg-status-safe-bg',
+      border: 'border-status-safe/30',
+      text: 'text-status-safe',
+      dot: 'status-dot-safe',
+    },
+    AT_RISK: {
+      icon: AlertTriangle,
+      label: 'AT RISK',
+      bg: 'bg-status-warning-bg',
+      border: 'border-status-warning/30',
+      text: 'text-status-warning',
+      dot: 'status-dot-warning',
+    },
+    COMPROMISED: {
+      icon: AlertCircle,
+      label: 'COMPROMISED',
+      bg: 'bg-status-danger-bg',
+      border: 'border-status-danger/30',
+      text: 'text-status-danger',
+      dot: 'status-dot-danger',
+    },
+  };
+
+  const { icon: Icon, label, bg, border, text, dot } = config[status];
+
+  return (
+    <div className={`flex items-center gap-3 px-4 py-3 rounded-xl ${bg} border ${border}`}>
+      <div className={`status-dot ${dot}`} />
+      <Icon className={`w-6 h-6 ${text}`} />
+      <span className={`font-display font-bold text-lg ${text}`}>{label}</span>
+    </div>
+  );
+}
+
+function RiskMeter({ score }: { score: number }) {
+  const getColor = () => {
+    if (score >= 70) return 'bg-status-danger';
+    if (score >= 30) return 'bg-status-warning';
+    return 'bg-status-safe';
+  };
+
+  return (
+    <div className="w-24 risk-meter">
+      <motion.div
+        className={`risk-meter-fill ${getColor()}`}
+        initial={{ width: 0 }}
+        animate={{ width: `${score}%` }}
+        transition={{ duration: 1, ease: 'easeOut' }}
+      />
+    </div>
+  );
+}
+
+function StatCard({
+  icon,
+  label,
+  value,
+  color,
+  isText,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number | string;
+  color: 'safe' | 'warning' | 'danger' | 'info';
+  isText?: boolean;
+}) {
+  const colorClasses = {
+    safe: 'text-status-safe',
+    warning: 'text-status-warning',
+    danger: 'text-status-danger',
+    info: 'text-blue-400',
+  };
+
+  return (
+    <div className="glass-card rounded-xl p-4">
+      <div className="flex items-center gap-2 text-sentinel-muted mb-2">
+        {icon}
+        <span className="text-xs">{label}</span>
+      </div>
+      <div className={`${isText ? 'text-sm' : 'text-2xl'} font-bold ${colorClasses[color]}`}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="glass-card rounded-xl p-12 text-center">
+      <div className="flex justify-center mb-4">{icon}</div>
+      <h3 className="font-display font-semibold text-lg mb-2">{title}</h3>
+      <p className="text-sentinel-muted">{description}</p>
+    </div>
+  );
+}
+
+// Utility functions
+function getStatusBorderClass(status: SecurityStatus): string {
+  switch (status) {
+    case 'SAFE':
+      return 'border-l-4 border-l-status-safe';
+    case 'AT_RISK':
+      return 'border-l-4 border-l-status-warning';
+    case 'COMPROMISED':
+      return 'border-l-4 border-l-status-danger';
+  }
+}
+
+function getRiskScoreColor(score: number): string {
+  if (score >= 70) return 'text-status-danger';
+  if (score >= 30) return 'text-status-warning';
+  return 'text-status-safe';
+}
+
+function getPriorityColor(priority: RiskLevel): string {
+  switch (priority) {
+    case 'CRITICAL':
+      return 'bg-status-danger';
+    case 'HIGH':
+      return 'bg-orange-500';
+    case 'MEDIUM':
+      return 'bg-status-warning';
+    case 'LOW':
+      return 'bg-blue-500';
+  }
+}
+
+function getSeverityDotColor(severity: RiskLevel): string {
+  switch (severity) {
+    case 'CRITICAL':
+      return 'bg-status-danger';
+    case 'HIGH':
+      return 'bg-orange-500';
+    case 'MEDIUM':
+      return 'bg-status-warning';
+    case 'LOW':
+      return 'bg-status-safe';
+  }
+}
+
+function getExplorerUrl(chain: string, address: string): string {
+  const explorers: Record<string, string> = {
+    ethereum: 'https://etherscan.io/address/',
+    base: 'https://basescan.org/address/',
+    bnb: 'https://bscscan.com/address/',
+    solana: 'https://solscan.io/account/',
+  };
+  return `${explorers[chain] || explorers.ethereum}${address}`;
+}
+
