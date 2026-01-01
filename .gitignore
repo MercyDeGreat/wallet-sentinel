@@ -1,19 +1,5 @@
 node_modules
-# dependencies
-node_modules/
-
-# next.js
-.next/
-out/
-
-# env
+.next
 .env
 .env.local
-
-# logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# OS
-.DS_Store
+.env.production
