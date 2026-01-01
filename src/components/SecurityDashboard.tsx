@@ -30,8 +30,13 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [copied, setCopied] = useState(false);
 
+  // Safe array guards - ensure arrays are always defined
+  const safeThreats = Array.isArray(result?.detectedThreats) ? result.detectedThreats : [];
+  const safeApprovals = Array.isArray(result?.approvals) ? result.approvals : [];
+  const safeRecommendations = Array.isArray(result?.recommendations) ? result.recommendations : [];
+
   const copyAddress = () => {
-    navigator.clipboard.writeText(result.address);
+    navigator.clipboard.writeText(result?.address || '');
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -109,20 +114,20 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
         <StatCard
           icon={<AlertTriangle className="w-5 h-5" />}
           label="Active Threats"
-          value={result.detectedThreats.filter((t) => t.ongoingRisk).length}
-          color={result.detectedThreats.filter((t) => t.ongoingRisk).length > 0 ? 'danger' : 'safe'}
+          value={safeThreats.filter((t) => t?.ongoingRisk).length}
+          color={safeThreats.filter((t) => t?.ongoingRisk).length > 0 ? 'danger' : 'safe'}
         />
         <StatCard
           icon={<Layers className="w-5 h-5" />}
           label="Token Approvals"
-          value={result.approvals.length}
-          color={result.approvals.filter((a) => a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL').length > 0 ? 'warning' : 'info'}
+          value={safeApprovals.length}
+          color={safeApprovals.filter((a) => a?.riskLevel === 'HIGH' || a?.riskLevel === 'CRITICAL').length > 0 ? 'warning' : 'info'}
         />
         <StatCard
           icon={<AlertCircle className="w-5 h-5" />}
           label="High Risk Approvals"
-          value={result.approvals.filter((a) => a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL').length}
-          color={result.approvals.filter((a) => a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL').length > 0 ? 'danger' : 'safe'}
+          value={safeApprovals.filter((a) => a?.riskLevel === 'HIGH' || a?.riskLevel === 'CRITICAL').length}
+          color={safeApprovals.filter((a) => a?.riskLevel === 'HIGH' || a?.riskLevel === 'CRITICAL').length > 0 ? 'danger' : 'safe'}
         />
         <StatCard
           icon={<Clock className="w-5 h-5" />}
@@ -176,27 +181,27 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
         )}
         {activeTab === 'threats' && (
           <div className="space-y-4">
-            {result.detectedThreats.length === 0 ? (
+            {safeThreats.length === 0 ? (
               <EmptyState
                 icon={<Shield className="w-12 h-12 text-status-safe" />}
                 title="No Threats Detected"
                 description="No known security threats were found for this wallet."
               />
             ) : (
-              result.detectedThreats.map((threat) => (
-                <ThreatCard key={threat.id} threat={threat} chain={result.chain} />
+              safeThreats.map((threat) => (
+                <ThreatCard key={threat?.id} threat={threat} chain={result?.chain || 'ethereum'} />
               ))
             )}
           </div>
         )}
         {activeTab === 'approvals' && (
-          <ApprovalsDashboard approvals={result.approvals} chain={result.chain} />
+          <ApprovalsDashboard approvals={safeApprovals} chain={result?.chain || 'ethereum'} />
         )}
         {activeTab === 'recovery' && (
-          <RecoveryPlan plan={result.recoveryPlan} recommendations={result.recommendations} />
+          <RecoveryPlan plan={result?.recoveryPlan} recommendations={safeRecommendations} />
         )}
         {activeTab === 'education' && (
-          <EducationalPanel content={result.educationalContent} chain={result.chain} />
+          <EducationalPanel content={result?.educationalContent} chain={result?.chain || 'ethereum'} />
         )}
       </motion.div>
     </div>
@@ -210,10 +215,15 @@ function OverviewTab({
   result: WalletAnalysisResult;
   onNavigate: (tab: Tab) => void;
 }) {
+  // Safe array guards for nested component
+  const safeThreats = Array.isArray(result?.detectedThreats) ? result.detectedThreats.filter(t => t != null) : [];
+  const safeApprovals = Array.isArray(result?.approvals) ? result.approvals.filter(a => a != null) : [];
+  const safeRecommendations = Array.isArray(result?.recommendations) ? result.recommendations.filter(r => r != null) : [];
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Critical Actions */}
-      {result.securityStatus !== 'SAFE' && (
+      {result?.securityStatus !== 'SAFE' && (
         <div className="lg:col-span-2">
           <div className="glass-card rounded-xl p-6 border-l-4 border-status-danger">
             <h3 className="font-display font-semibold text-lg mb-4 flex items-center gap-2">
@@ -221,8 +231,8 @@ function OverviewTab({
               Recommended Actions
             </h3>
             <div className="space-y-3">
-              {result.recommendations
-                .filter((r) => r.category === 'IMMEDIATE')
+              {safeRecommendations
+                .filter((r) => r?.category === 'IMMEDIATE')
                 .slice(0, 3)
                 .map((rec) => (
                   <div
@@ -262,14 +272,14 @@ function OverviewTab({
             </button>
           )}
         </div>
-        {result.detectedThreats.length === 0 ? (
+        {safeThreats.length === 0 ? (
           <div className="text-center py-8">
             <CheckCircle className="w-12 h-12 text-status-safe mx-auto mb-3" />
             <p className="text-sentinel-muted">No threats detected</p>
           </div>
         ) : (
           <div className="space-y-2">
-            {result.detectedThreats.slice(0, 3).map((threat) => (
+            {safeThreats.slice(0, 3).map((threat) => (
               <div
                 key={threat.id}
                 className="flex items-center gap-3 p-3 bg-sentinel-surface rounded-lg"
@@ -294,7 +304,7 @@ function OverviewTab({
       <div className="glass-card rounded-xl p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-display font-semibold">Token Approvals</h3>
-          {result.approvals.length > 0 && (
+          {safeApprovals.length > 0 && (
             <button
               onClick={() => onNavigate('approvals')}
               className="text-sm text-blue-400 hover:text-blue-300 flex items-center gap-1"
@@ -303,14 +313,14 @@ function OverviewTab({
             </button>
           )}
         </div>
-        {result.approvals.length === 0 ? (
+        {safeApprovals.length === 0 ? (
           <div className="text-center py-8">
             <Shield className="w-12 h-12 text-status-safe mx-auto mb-3" />
             <p className="text-sentinel-muted">No active approvals</p>
           </div>
         ) : (
           <div className="space-y-2">
-            {result.approvals.slice(0, 4).map((approval) => (
+            {safeApprovals.slice(0, 4).map((approval) => (
               <div
                 key={approval.id}
                 className="flex items-center gap-3 p-3 bg-sentinel-surface rounded-lg"

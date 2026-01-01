@@ -39,7 +39,12 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
 
-  const typeInfo = attackTypeInfo[threat.type] || attackTypeInfo.UNKNOWN;
+  // Safe array guards
+  const safeRelatedAddresses = Array.isArray(threat?.relatedAddresses) ? threat.relatedAddresses.filter(Boolean) : [];
+  const safeRelatedTransactions = Array.isArray(threat?.relatedTransactions) ? threat.relatedTransactions.filter(Boolean) : [];
+  const safeRecoverableAssets = Array.isArray(threat?.recoverableAssets) ? threat.recoverableAssets.filter(Boolean) : [];
+
+  const typeInfo = attackTypeInfo[threat?.type] || attackTypeInfo.UNKNOWN;
   const Icon = typeInfo.icon;
 
   const copyToClipboard = (text: string) => {
@@ -140,11 +145,11 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
               </div>
 
               {/* Related Addresses */}
-              {threat.relatedAddresses.length > 0 && (
+              {safeRelatedAddresses.length > 0 && (
                 <div>
                   <h4 className="text-sm font-medium mb-2 text-sentinel-muted">Related Addresses</h4>
                   <div className="space-y-2">
-                    {threat.relatedAddresses.map((address) => (
+                    {safeRelatedAddresses.map((address) => (
                       <div
                         key={address}
                         className="flex items-center gap-2 p-2 bg-sentinel-surface rounded-lg"
@@ -175,11 +180,11 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
               )}
 
               {/* Related Transactions */}
-              {threat.relatedTransactions.length > 0 && (
+              {safeRelatedTransactions.length > 0 && (
                 <div>
                   <h4 className="text-sm font-medium mb-2 text-sentinel-muted">Related Transactions</h4>
                   <div className="space-y-2">
-                    {threat.relatedTransactions.slice(0, 5).map((hash) => (
+                    {safeRelatedTransactions.slice(0, 5).map((hash) => (
                       <a
                         key={hash}
                         href={getTxExplorerUrl(hash)}
@@ -233,17 +238,17 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
               )}
 
               {/* Recoverable Assets */}
-              {threat.recoverableAssets && threat.recoverableAssets.length > 0 && (
+              {safeRecoverableAssets.length > 0 && (
                 <div className="p-4 bg-status-safe-bg border border-status-safe/30 rounded-lg">
                   <h4 className="text-sm font-medium mb-2 text-status-safe flex items-center gap-2">
                     <Shield className="w-4 h-4" />
                     Recoverable Assets
                   </h4>
                   <div className="space-y-2">
-                    {threat.recoverableAssets.map((asset, index) => (
+                    {safeRecoverableAssets.map((asset, index) => (
                       <div key={index} className="flex items-center justify-between text-sm">
-                        <span>{asset.token.symbol}</span>
-                        <span className="text-sentinel-muted">{asset.balance}</span>
+                        <span>{asset?.token?.symbol || 'Unknown'}</span>
+                        <span className="text-sentinel-muted">{asset?.balance || '0'}</span>
                       </div>
                     ))}
                   </div>

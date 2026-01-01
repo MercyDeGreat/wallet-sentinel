@@ -27,6 +27,9 @@ interface RecoveryPlanProps {
 export function RecoveryPlan({ plan, recommendations }: RecoveryPlanProps) {
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
 
+  // Safe array guard - ensure recommendations is always an array
+  const safeRecommendations = Array.isArray(recommendations) ? recommendations : [];
+
   const toggleStep = (order: number) => {
     const newCompleted = new Set(completedSteps);
     if (newCompleted.has(order)) {
@@ -50,9 +53,9 @@ export function RecoveryPlan({ plan, recommendations }: RecoveryPlanProps) {
     );
   }
 
-  const immediateRecs = recommendations.filter((r) => r.category === 'IMMEDIATE');
-  const shortTermRecs = recommendations.filter((r) => r.category === 'SHORT_TERM');
-  const longTermRecs = recommendations.filter((r) => r.category === 'LONG_TERM');
+  const immediateRecs = safeRecommendations.filter((r) => r?.category === 'IMMEDIATE');
+  const shortTermRecs = safeRecommendations.filter((r) => r?.category === 'SHORT_TERM');
+  const longTermRecs = safeRecommendations.filter((r) => r?.category === 'LONG_TERM');
 
   return (
     <div className="space-y-6">
@@ -62,14 +65,14 @@ export function RecoveryPlan({ plan, recommendations }: RecoveryPlanProps) {
       )}
 
       {/* Warnings */}
-      {plan && plan.warnings.length > 0 && (
+      {plan && Array.isArray(plan.warnings) && plan.warnings.length > 0 && (
         <div className="glass-card rounded-xl p-4 border-l-4 border-l-status-warning">
           <div className="flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-status-warning flex-shrink-0 mt-0.5" />
             <div>
               <h4 className="font-medium text-status-warning mb-2">Important Warnings</h4>
               <ul className="space-y-2">
-                {plan.warnings.map((warning, index) => (
+                {plan.warnings.filter(Boolean).map((warning, index) => (
                   <li key={index} className="text-sm text-sentinel-muted flex items-start gap-2">
                     <span className="text-status-warning">•</span>
                     {warning}
@@ -82,7 +85,7 @@ export function RecoveryPlan({ plan, recommendations }: RecoveryPlanProps) {
       )}
 
       {/* Recovery Steps */}
-      {plan && plan.steps.length > 0 && (
+      {plan && Array.isArray(plan.steps) && plan.steps.length > 0 && (
         <div className="glass-card rounded-xl p-6">
           <h3 className="font-display font-semibold text-lg mb-4 flex items-center gap-2">
             <Zap className="w-5 h-5 text-blue-400" />
@@ -90,12 +93,12 @@ export function RecoveryPlan({ plan, recommendations }: RecoveryPlanProps) {
           </h3>
 
           <div className="space-y-4">
-            {plan.steps.map((step, index) => (
+            {plan.steps.filter(step => step != null).map((step, index) => (
               <RecoveryStepCard
-                key={step.order}
+                key={step?.order || index}
                 step={step}
-                isCompleted={completedSteps.has(step.order)}
-                onToggle={() => toggleStep(step.order)}
+                isCompleted={completedSteps.has(step?.order || 0)}
+                onToggle={() => toggleStep(step?.order || 0)}
                 isFirst={index === 0}
                 isLast={index === plan.steps.length - 1}
               />
@@ -361,6 +364,9 @@ function RecommendationSection({
   recommendations: SecurityRecommendation[];
   color: 'danger' | 'warning' | 'info';
 }) {
+  // Safe array guard
+  const safeRecs = Array.isArray(recommendations) ? recommendations.filter(r => r != null) : [];
+  
   const borderColors = {
     danger: 'border-t-status-danger',
     warning: 'border-t-status-warning',
@@ -376,10 +382,10 @@ function RecommendationSection({
         </h4>
       </div>
       <div className="p-4 space-y-3">
-        {recommendations.map((rec) => (
-          <div key={rec.id} className="p-3 bg-sentinel-surface rounded-lg">
-            <h5 className="font-medium text-sm mb-1">{rec.title}</h5>
-            <p className="text-xs text-sentinel-muted">{rec.description}</p>
+        {safeRecs.map((rec) => (
+          <div key={rec?.id} className="p-3 bg-sentinel-surface rounded-lg">
+            <h5 className="font-medium text-sm mb-1">{rec?.title || 'Untitled'}</h5>
+            <p className="text-xs text-sentinel-muted">{rec?.description || ''}</p>
           </div>
         ))}
       </div>

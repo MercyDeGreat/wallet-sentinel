@@ -157,9 +157,12 @@ export class SolanaAnalyzer {
 
   private detectMaliciousProgramInteractions(transactions: ParsedTransactionWithMeta[]): DetectedThreat[] {
     const threats: DetectedThreat[] = [];
+    
+    // Safe array guard
+    const safeTxs = Array.isArray(transactions) ? transactions.filter(tx => tx != null) : [];
 
-    for (const tx of transactions) {
-      if (!tx.transaction?.message?.instructions) continue;
+    for (const tx of safeTxs) {
+      if (!tx?.transaction?.message?.instructions) continue;
 
       for (const instruction of tx.transaction.message.instructions) {
         const programId = instruction.programId.toString();
@@ -187,8 +190,11 @@ export class SolanaAnalyzer {
 
   private async detectDelegateAbuse(tokenAccounts: any[], owner: PublicKey): Promise<DetectedThreat[]> {
     const threats: DetectedThreat[] = [];
+    
+    // Safe array guard
+    const safeAccounts = Array.isArray(tokenAccounts) ? tokenAccounts.filter(a => a != null) : [];
 
-    for (const account of tokenAccounts) {
+    for (const account of safeAccounts) {
       const info = account.account.data.parsed?.info;
       if (!info) continue;
 
@@ -221,20 +227,27 @@ export class SolanaAnalyzer {
 
   private detectRapidOutflows(transactions: ParsedTransactionWithMeta[], address: string): DetectedThreat[] {
     const threats: DetectedThreat[] = [];
+    
+    // Safe array guard
+    const safeTxs = Array.isArray(transactions) ? transactions.filter(tx => tx != null) : [];
+    if (safeTxs.length === 0) return threats;
 
     // Group transactions by time window
     const windowMinutes = 10;
-    const sortedTxs = [...transactions]
-      .filter((tx) => tx.blockTime)
-      .sort((a, b) => (a.blockTime || 0) - (b.blockTime || 0));
+    const sortedTxs = [...safeTxs]
+      .filter((tx) => tx?.blockTime)
+      .sort((a, b) => (a?.blockTime || 0) - (b?.blockTime || 0));
 
     // Look for multiple outbound transfers in short window
     for (let i = 0; i < sortedTxs.length; i++) {
-      const windowStart = sortedTxs[i].blockTime || 0;
+      const currentTx = sortedTxs[i];
+      if (!currentTx) continue;
+      
+      const windowStart = currentTx.blockTime || 0;
       const windowEnd = windowStart + windowMinutes * 60;
 
       const txsInWindow = sortedTxs.filter(
-        (tx) => (tx.blockTime || 0) >= windowStart && (tx.blockTime || 0) <= windowEnd
+        (tx) => tx && (tx.blockTime || 0) >= windowStart && (tx.blockTime || 0) <= windowEnd
       );
 
       // Count outbound transfers
@@ -352,26 +365,32 @@ export class SolanaAnalyzer {
 
   private calculateRiskScore(threats: DetectedThreat[], approvals: TokenApproval[]): number {
     let score = 0;
+    
+    // Safe array guards
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    const safeApprovals = Array.isArray(approvals) ? approvals.filter(a => a != null) : [];
 
     // Critical threats
-    score += threats.filter((t) => t.severity === 'CRITICAL').length * 30;
+    score += safeThreats.filter((t) => t?.severity === 'CRITICAL').length * 30;
     // High threats
-    score += threats.filter((t) => t.severity === 'HIGH').length * 20;
+    score += safeThreats.filter((t) => t?.severity === 'HIGH').length * 20;
     // Medium threats
-    score += threats.filter((t) => t.severity === 'MEDIUM').length * 10;
+    score += safeThreats.filter((t) => t?.severity === 'MEDIUM').length * 10;
     // Malicious approvals
-    score += approvals.filter((a) => a.isMalicious).length * 25;
+    score += safeApprovals.filter((a) => a?.isMalicious).length * 25;
     // Any active delegations
-    score += approvals.length * 5;
+    score += safeApprovals.length * 5;
 
     return Math.min(100, Math.max(0, score));
   }
 
   private determineSecurityStatus(riskScore: number, threats: DetectedThreat[]): SecurityStatus {
-    const hasCritical = threats.some((t) => t.severity === 'CRITICAL' && t.ongoingRisk);
+    // Safe array guard
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    const hasCritical = safeThreats.some((t) => t?.severity === 'CRITICAL' && t?.ongoingRisk);
 
     if (hasCritical || riskScore >= 70) return 'COMPROMISED';
-    if (riskScore >= 30 || threats.length > 0) return 'AT_RISK';
+    if (riskScore >= 30 || safeThreats.length > 0) return 'AT_RISK';
     return 'SAFE';
   }
 
@@ -379,23 +398,28 @@ export class SolanaAnalyzer {
     transactions: ParsedTransactionWithMeta[],
     threats: DetectedThreat[]
   ): SuspiciousTransaction[] {
-    const suspiciousSigs = new Set(threats.flatMap((t) => t.relatedTransactions));
+    // Safe array guards
+    const safeTxs = Array.isArray(transactions) ? transactions.filter(tx => tx != null) : [];
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    
+    const suspiciousSigs = new Set(safeThreats.flatMap((t) => Array.isArray(t?.relatedTransactions) ? t.relatedTransactions : []));
 
-    return transactions
-      .filter((tx) => suspiciousSigs.has(tx.transaction.signatures[0]))
+    return safeTxs
+      .filter((tx) => tx?.transaction?.signatures?.[0] && suspiciousSigs.has(tx.transaction.signatures[0]))
       .map((tx) => {
-        const relatedThreat = threats.find((t) =>
-          t.relatedTransactions.includes(tx.transaction.signatures[0])
+        const sig = tx.transaction.signatures[0];
+        const relatedThreat = safeThreats.find((t) =>
+          Array.isArray(t?.relatedTransactions) && t.relatedTransactions.includes(sig)
         );
 
         return {
-          hash: tx.transaction.signatures[0],
+          hash: sig,
           timestamp: tx.blockTime
             ? new Date(tx.blockTime * 1000).toISOString()
             : new Date().toISOString(),
           type: relatedThreat?.type || 'UNKNOWN',
-          from: tx.transaction.message.accountKeys[0]?.pubkey.toString() || '',
-          to: tx.transaction.message.accountKeys[1]?.pubkey.toString() || '',
+          from: tx.transaction?.message?.accountKeys?.[0]?.pubkey?.toString?.() || '',
+          to: tx.transaction?.message?.accountKeys?.[1]?.pubkey?.toString?.() || '',
           riskLevel: relatedThreat?.severity || 'MEDIUM',
           flags: relatedThreat ? [relatedThreat.title] : [],
           description: relatedThreat?.description || 'Suspicious activity detected',
@@ -409,9 +433,12 @@ export class SolanaAnalyzer {
     status: SecurityStatus
   ): SecurityRecommendation[] {
     const recommendations: SecurityRecommendation[] = [];
+    
+    // Safe array guard
+    const safeApprovals = Array.isArray(approvals) ? approvals.filter(a => a != null) : [];
 
     // Malicious delegations
-    const maliciousDelegations = approvals.filter((a) => a.isMalicious);
+    const maliciousDelegations = safeApprovals.filter((a) => a?.isMalicious);
     if (maliciousDelegations.length > 0) {
       recommendations.push({
         id: 'revoke-delegations',
@@ -467,9 +494,13 @@ export class SolanaAnalyzer {
   ): RecoveryPlan {
     const steps: RecoveryStep[] = [];
     let order = 1;
+    
+    // Safe array guards
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    const safeApprovals = Array.isArray(approvals) ? approvals.filter(a => a != null) : [];
 
     // Step 1: Revoke malicious delegations
-    const maliciousDelegations = approvals.filter((a) => a.isMalicious);
+    const maliciousDelegations = safeApprovals.filter((a) => a?.isMalicious);
     if (maliciousDelegations.length > 0) {
       steps.push({
         order: order++,
@@ -483,7 +514,7 @@ export class SolanaAnalyzer {
     }
 
     // Step 2: Transfer assets if ongoing risk
-    if (threats.some((t) => t.ongoingRisk)) {
+    if (safeThreats.some((t) => t?.ongoingRisk)) {
       steps.push({
         order: order++,
         title: 'Transfer All Assets',
@@ -507,7 +538,7 @@ export class SolanaAnalyzer {
     });
 
     return {
-      urgencyLevel: threats.some((t) => t.severity === 'CRITICAL') ? 'CRITICAL' : 'HIGH',
+      urgencyLevel: safeThreats.some((t) => t?.severity === 'CRITICAL') ? 'CRITICAL' : 'HIGH',
       estimatedTimeMinutes: steps.length * 3,
       steps,
       warnings: [

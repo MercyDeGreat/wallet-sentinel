@@ -1039,20 +1039,26 @@ export class EVMAnalyzer {
       return 'No significant security threats detected. Your wallet appears to be in good standing.';
     }
     if (status === 'AT_RISK') {
-      return `${threats.length} potential security concern(s) detected. Review the identified risks and consider taking action.`;
+      const safeThreats = Array.isArray(threats) ? threats : [];
+      return `${safeThreats.length} potential security concern(s) detected. Review the identified risks and consider taking action.`;
     }
     
-    const drainerThreats = threats.filter(t => t.type === 'WALLET_DRAINER' || t.type === 'PRIVATE_KEY_LEAK');
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    const drainerThreats = safeThreats.filter(t => t?.type === 'WALLET_DRAINER' || t?.type === 'PRIVATE_KEY_LEAK');
     if (drainerThreats.length > 0) {
       return `🚨 CRITICAL: This wallet shows signs of compromise. ${drainerThreats.length} drainer/key compromise incident(s) detected. Immediate action required.`;
     }
-    return `🚨 CRITICAL: ${threats.length} critical security threat(s) detected. Review immediately.`;
+    return `🚨 CRITICAL: ${safeThreats.length} critical security threat(s) detected. Review immediately.`;
   }
 
   private generateRecommendations(threats: DetectedThreat[], approvals: TokenApproval[], status: 'SAFE' | 'AT_RISK' | 'COMPROMISED'): SecurityRecommendation[] {
     const recommendations: SecurityRecommendation[] = [];
+    
+    // Safe array guards
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    const safeApprovals = Array.isArray(approvals) ? approvals.filter(a => a != null) : [];
 
-    const maliciousApprovals = approvals.filter(a => a.isMalicious);
+    const maliciousApprovals = safeApprovals.filter(a => a?.isMalicious);
     if (maliciousApprovals.length > 0) {
       recommendations.push({
         id: 'revoke-malicious',
@@ -1065,7 +1071,7 @@ export class EVMAnalyzer {
       });
     }
 
-    if (threats.some(t => t.type === 'WALLET_DRAINER' || t.type === 'PRIVATE_KEY_LEAK')) {
+    if (safeThreats.some(t => t?.type === 'WALLET_DRAINER' || t?.type === 'PRIVATE_KEY_LEAK')) {
       recommendations.push({
         id: 'move-assets',
         priority: 'CRITICAL',
@@ -1092,8 +1098,12 @@ export class EVMAnalyzer {
   private generateRecoveryPlan(threats: DetectedThreat[], approvals: TokenApproval[]): RecoveryPlan {
     const steps: RecoveryStep[] = [];
     let order = 1;
+    
+    // Safe array guards
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    const safeApprovals = Array.isArray(approvals) ? approvals.filter(a => a != null) : [];
 
-    const maliciousApprovals = approvals.filter(a => a.isMalicious);
+    const maliciousApprovals = safeApprovals.filter(a => a?.isMalicious);
     if (maliciousApprovals.length > 0) {
       steps.push({
         order: order++,
@@ -1104,7 +1114,7 @@ export class EVMAnalyzer {
       });
     }
 
-    const isCompromised = threats.some(t => t.type === 'WALLET_DRAINER' || t.type === 'PRIVATE_KEY_LEAK' || (t.severity === 'CRITICAL' && t.ongoingRisk));
+    const isCompromised = safeThreats.some(t => t?.type === 'WALLET_DRAINER' || t?.type === 'PRIVATE_KEY_LEAK' || (t?.severity === 'CRITICAL' && t?.ongoingRisk));
 
     if (isCompromised) {
       steps.push({
@@ -1137,8 +1147,11 @@ export class EVMAnalyzer {
   }
 
   private generateEducationalContent(threats: DetectedThreat[]) {
-    const primaryType = threats[0]?.type || 'UNKNOWN';
-    const hasSweeperBot = threats.some(t => t.attackerInfo?.type === 'SWEEPER_BOT');
+    // Safe array guard
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    
+    const primaryType = safeThreats[0]?.type || 'UNKNOWN';
+    const hasSweeperBot = safeThreats.some(t => t?.attackerInfo?.type === 'SWEEPER_BOT');
 
     const explanations: Record<string, any> = {
       WALLET_DRAINER: {

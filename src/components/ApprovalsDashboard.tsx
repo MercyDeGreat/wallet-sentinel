@@ -59,7 +59,11 @@ export function ApprovalsDashboard({ approvals, chain }: ApprovalsDashboardProps
   const targetChainId = CHAIN_IDS[chain];
   const isCorrectChain = chainId === targetChainId;
 
-  const filteredApprovals = approvals.filter((approval) => {
+  // Safe array guard - ensure approvals is always an array
+  const safeApprovals = Array.isArray(approvals) ? approvals : [];
+
+  const filteredApprovals = safeApprovals.filter((approval) => {
+    if (!approval) return false;
     if (filter === 'high') {
       return approval.riskLevel === 'HIGH' || approval.riskLevel === 'CRITICAL';
     }
@@ -80,8 +84,8 @@ export function ApprovalsDashboard({ approvals, chain }: ApprovalsDashboardProps
   };
 
   const selectAllHighRisk = () => {
-    const highRiskIds = approvals
-      .filter((a) => a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL' || a.isMalicious)
+    const highRiskIds = safeApprovals
+      .filter((a) => a && (a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL' || a.isMalicious))
       .map((a) => a.id);
     setSelectedApprovals(new Set(highRiskIds));
   };
@@ -135,13 +139,13 @@ export function ApprovalsDashboard({ approvals, chain }: ApprovalsDashboardProps
     );
   }
 
-  const highRiskCount = approvals.filter(
-    (a) => a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL'
+  const highRiskCount = safeApprovals.filter(
+    (a) => a && (a.riskLevel === 'HIGH' || a.riskLevel === 'CRITICAL')
   ).length;
-  const maliciousCount = approvals.filter((a) => a.isMalicious).length;
+  const maliciousCount = safeApprovals.filter((a) => a?.isMalicious).length;
 
   // Count successful revocations
-  const revokedCount = Object.values(revocationStates).filter(s => s.status === 'success').length;
+  const revokedCount = Object.values(revocationStates || {}).filter(s => s?.status === 'success').length;
 
   return (
     <div className="space-y-6">

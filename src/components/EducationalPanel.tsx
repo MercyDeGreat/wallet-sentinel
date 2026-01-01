@@ -27,6 +27,10 @@ export function EducationalPanel({ content, chain }: EducationalPanelProps) {
   const [activeSection, setActiveSection] = useState<string>('attack');
   const [checklist, setChecklist] = useState<Record<string, boolean>>({});
 
+  // Safe array guards
+  const safeSecurityChecklist = Array.isArray(content?.securityChecklist) ? content.securityChecklist : [];
+  const safePreventionTips = Array.isArray(content?.preventionTips) ? content.preventionTips : [];
+
   const toggleChecklistItem = (id: string) => {
     setChecklist((prev) => ({
       ...prev,
@@ -102,7 +106,7 @@ export function EducationalPanel({ content, chain }: EducationalPanelProps) {
           animate={{ opacity: 1, y: 0 }}
           className="space-y-4"
         >
-          {content?.preventionTips.map((tip, index) => (
+          {safePreventionTips.map((tip, index) => (
             <PreventionTipCard key={index} tip={tip} index={index} />
           ))}
 
@@ -155,7 +159,7 @@ export function EducationalPanel({ content, chain }: EducationalPanelProps) {
                 Wallet Security Checklist
               </h3>
               <div className="text-sm text-sentinel-muted">
-                {Object.values(checklist).filter(Boolean).length} / {content?.securityChecklist.length || 0} completed
+                {Object.values(checklist || {}).filter(Boolean).length} / {safeSecurityChecklist.length} completed
               </div>
             </div>
 
@@ -166,8 +170,8 @@ export function EducationalPanel({ content, chain }: EducationalPanelProps) {
                 initial={{ width: 0 }}
                 animate={{
                   width: `${
-                    (Object.values(checklist).filter(Boolean).length /
-                      (content?.securityChecklist.length || 1)) *
+                    (Object.values(checklist || {}).filter(Boolean).length /
+                      (safeSecurityChecklist.length || 1)) *
                     100
                   }%`,
                 }}
@@ -435,10 +439,16 @@ function ChecklistGroups({
   onToggle: (id: string) => void;
   chain: Chain;
 }) {
+  // Safe array guard
+  const safeItems = Array.isArray(items) ? items.filter(item => item != null) : [];
+  const safeChecklist = checklist || {};
+  
   // Group items by category
-  const groups = items.reduce((acc, item) => {
+  const groups = safeItems.reduce((acc, item) => {
+    if (!item?.category) return acc;
+    
     // Filter chain-specific items
-    if (item.chainSpecific && !item.chainSpecific.includes(chain)) {
+    if (Array.isArray(item.chainSpecific) && !item.chainSpecific.includes(chain)) {
       return acc;
     }
 
@@ -460,19 +470,19 @@ function ChecklistGroups({
                 key={item.id}
                 onClick={() => onToggle(item.id)}
                 className={`w-full flex items-center gap-3 p-3 rounded-lg transition-all ${
-                  checklist[item.id]
+                  safeChecklist[item.id]
                     ? 'bg-status-safe-bg/50'
                     : 'bg-sentinel-surface hover:bg-sentinel-elevated'
                 }`}
               >
                 <div
                   className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${
-                    checklist[item.id]
+                    safeChecklist[item.id]
                       ? 'bg-status-safe border-status-safe'
                       : 'border-sentinel-border'
                   }`}
                 >
-                  {checklist[item.id] && <CheckCircle className="w-3 h-3 text-white" />}
+                  {safeChecklist[item.id] && <CheckCircle className="w-3 h-3 text-white" />}
                 </div>
                 <span
                   className={`text-sm text-left ${
