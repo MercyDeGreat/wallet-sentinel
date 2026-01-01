@@ -5,6 +5,9 @@
 // Simulates a recovery transaction to check for drainer interception.
 // This is a READ-ONLY operation that does not execute transactions.
 
+// Required for Cloudflare Pages
+export const runtime = 'edge';
+
 import { NextRequest, NextResponse } from 'next/server';
 import { ethers } from 'ethers';
 import { ApiResponse, TransactionSimulation, Chain } from '@/types';

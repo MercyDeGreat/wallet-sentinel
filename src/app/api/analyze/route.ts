@@ -5,30 +5,19 @@
 // Analyzes a wallet address for security threats.
 // All operations are READ-ONLY and defensive.
 
+// Required for Cloudflare Pages
+export const runtime = 'edge';
+
 import { NextRequest, NextResponse } from 'next/server';
 import { EVMAnalyzer } from '@/lib/analyzers/evm-analyzer';
 import { SolanaAnalyzer } from '@/lib/analyzers/solana-analyzer';
 import { Chain, WalletAnalysisRequest, ApiResponse, WalletAnalysisResult } from '@/types';
 
-// Rate limiting (simple in-memory implementation)
-const requestCounts = new Map<string, { count: number; resetTime: number }>();
-const RATE_LIMIT = 20; // requests per minute
-const RATE_WINDOW = 60000; // 1 minute in ms
-
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const record = requestCounts.get(ip);
-
-  if (!record || now > record.resetTime) {
-    requestCounts.set(ip, { count: 1, resetTime: now + RATE_WINDOW });
-    return false;
-  }
-
-  if (record.count >= RATE_LIMIT) {
-    return true;
-  }
-
-  record.count++;
+// Rate limiting disabled for Edge Runtime (no persistent state)
+// In production, use Cloudflare Rate Limiting or a KV store
+function isRateLimited(_ip: string): boolean {
+  // Rate limiting requires external state (KV, D1, or Cloudflare Rate Limiting)
+  // Disabled for Edge Runtime compatibility
   return false;
 }
 
