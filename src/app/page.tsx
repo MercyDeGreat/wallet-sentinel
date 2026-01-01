@@ -64,16 +64,21 @@ export default function HomePage() {
                 initial={{ scale: 0.8, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 transition={{ delay: 0.2, duration: 0.5 }}
-                className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-blue-600/20 to-cyan-600/20 border border-blue-500/30 mb-6"
+                className="inline-flex items-center justify-center w-24 h-24 mb-6"
               >
-                <Shield className="w-10 h-10 text-blue-400" />
+                <img 
+                  src="/logo.svg" 
+                  alt="Securnex" 
+                  className="w-full h-full drop-shadow-[0_0_20px_rgba(0,212,255,0.5)]"
+                />
               </motion.div>
 
-              <h1 className="font-display text-4xl md:text-5xl font-bold mb-4">
-                <span className="gradient-text">Wallet Sentinel</span>
+              <h1 className="text-4xl md:text-5xl font-bold mb-4 tracking-wide">
+                <span className="text-white">SECURNE</span>
+                <span className="text-cyan-400">X</span>
               </h1>
 
-              <p className="text-xl text-sentinel-muted max-w-2xl mx-auto mb-8">
+              <p className="text-xl text-gray-400 max-w-2xl mx-auto mb-8">
                 Comprehensive security analysis for your blockchain wallets. 
                 Detect threats, protect assets, recover safely.
               </p>

@@ -197,6 +197,41 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
                 </div>
               )}
 
+              {/* Sweeper Bot Alert */}
+              {threat.attackerInfo?.type === 'SWEEPER_BOT' && (
+                <div className="p-4 bg-red-900/30 border border-red-500/50 rounded-lg">
+                  <h4 className="text-sm font-bold mb-3 text-red-400 flex items-center gap-2">
+                    <AlertTriangle className="w-5 h-5 animate-pulse" />
+                    🚨 SWEEPER BOT ATTACK - YOUR PRIVATE KEY IS COMPROMISED
+                  </h4>
+                  <div className="space-y-3 text-sm">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <span className="text-sentinel-muted">Sweep Events:</span>
+                        <span className="ml-2 text-red-400 font-bold">{threat.attackerInfo.sweepCount}</span>
+                      </div>
+                      <div>
+                        <span className="text-sentinel-muted">Avg Response:</span>
+                        <span className="ml-2 text-red-400 font-bold">{threat.attackerInfo.avgResponseTime}s</span>
+                      </div>
+                    </div>
+                    <div className="p-3 bg-black/40 rounded-lg">
+                      <div className="text-sentinel-muted text-xs mb-1">Attacker Address:</div>
+                      <div className="font-mono text-red-400 break-all">{threat.attackerInfo.address}</div>
+                    </div>
+                    <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                      <p className="text-yellow-400 font-medium mb-2">⚠️ CRITICAL: This wallet cannot be saved</p>
+                      <ul className="text-sentinel-muted text-xs space-y-1">
+                        <li>• The attacker has your private key - they can sign ANY transaction</li>
+                        <li>• Their bot monitors 24/7 and sweeps funds in {threat.attackerInfo.avgResponseTime} seconds</li>
+                        <li>• <strong className="text-red-400">DO NOT send any more funds to this wallet</strong></li>
+                        <li>• Create a NEW wallet with a fresh seed phrase immediately</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Recoverable Assets */}
               {threat.recoverableAssets && threat.recoverableAssets.length > 0 && (
                 <div className="p-4 bg-status-safe-bg border border-status-safe/30 rounded-lg">

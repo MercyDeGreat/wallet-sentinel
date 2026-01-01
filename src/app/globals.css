@@ -5,14 +5,14 @@
 @tailwind utilities;
 
 :root {
-  --bg-primary: #0a0b0d;
-  --bg-surface: #12141a;
-  --bg-elevated: #1a1d24;
-  --border-color: #2a2f3a;
+  --bg-primary: #000000;
+  --bg-surface: #0a0a0a;
+  --bg-elevated: #111111;
+  --border-color: #1a2a2a;
   --text-primary: #e5e7eb;
   --text-muted: #6b7280;
-  --accent-blue: #3b82f6;
-  --accent-cyan: #06b6d4;
+  --accent-blue: #00d4ff;
+  --accent-cyan: #00d4ff;
   --status-safe: #10b981;
   --status-warning: #f59e0b;
   --status-danger: #ef4444;

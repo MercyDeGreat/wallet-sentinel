@@ -65,6 +65,13 @@ export interface DetectedThreat {
   relatedTransactions: string[];
   ongoingRisk: boolean;
   recoverableAssets?: AssetInfo[];
+  attackerInfo?: {
+    address: string;
+    type: 'SWEEPER_BOT' | 'DRAINER' | 'PHISHING' | 'UNKNOWN';
+    sweepCount?: number;
+    avgResponseTime?: number;
+    totalStolen?: string;
+  };
 }
 
 export interface TokenApproval {

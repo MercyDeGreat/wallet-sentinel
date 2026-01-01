@@ -9,16 +9,16 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Security-focused dark theme
+        // Securnex dark theme - pitch black with cyan accents
         sentinel: {
-          bg: '#0a0b0d',
-          surface: '#12141a',
-          elevated: '#1a1d24',
-          border: '#2a2f3a',
+          bg: '#000000',
+          surface: '#0a0a0a',
+          elevated: '#111111',
+          border: '#1a2a2a',
           muted: '#6b7280',
           text: '#e5e7eb',
-          primary: '#3b82f6',
-          accent: '#06b6d4',
+          primary: '#00d4ff',
+          accent: '#00d4ff',
         },
         status: {
           safe: '#10b981',

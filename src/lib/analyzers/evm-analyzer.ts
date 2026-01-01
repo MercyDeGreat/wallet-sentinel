@@ -149,6 +149,10 @@ export class EVMAnalyzer {
     const approvalThreats = this.detectApprovalAbuse(approvalEvents, tokenTransfers, normalizedAddress);
     threats.push(...approvalThreats);
 
+    // 4. DETECT SWEEPER BOT (Private Key Compromise with Active Monitoring)
+    const sweeperThreat = this.detectSweeperBot(transactions, tokenTransfers, currentBalance, normalizedAddress);
+    if (sweeperThreat) threats.push(sweeperThreat);
+
     // ============================================
     // ANALYZE CURRENT APPROVALS
     // ============================================
@@ -378,6 +382,150 @@ export class EVMAnalyzer {
             relatedAddresses: [topDest],
             relatedTransactions: topData.hashes.slice(0, 10),
             ongoingRisk: false,
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  // ============================================
+  // DETECTION: SWEEPER BOT (Private Key Compromise)
+  // ============================================
+
+  private detectSweeperBot(
+    transactions: TransactionData[],
+    tokenTransfers: TokenTransfer[],
+    currentBalance: string,
+    userAddress: string
+  ): DetectedThreat | null {
+    // Sweeper bot pattern:
+    // 1. Funds come IN
+    // 2. Within seconds/minutes, funds go OUT to same address
+    // 3. This happens multiple times
+    // 4. Wallet balance stays near zero
+
+    if (transactions.length < 4) return null;
+
+    // Parse current balance
+    let balanceWei: bigint;
+    try {
+      balanceWei = BigInt(currentBalance || '0');
+    } catch {
+      balanceWei = BigInt(0);
+    }
+
+    // Build timeline of in/out transactions
+    const timeline: { type: 'in' | 'out'; to: string; from: string; value: bigint; timestamp: number; hash: string }[] = [];
+
+    for (const tx of transactions) {
+      if (!tx?.from || !tx?.to || !tx?.hash) continue;
+      const value = BigInt(tx.value || '0');
+      if (value === BigInt(0)) continue;
+
+      if (tx.to.toLowerCase() === userAddress) {
+        // Incoming
+        timeline.push({ type: 'in', to: tx.to, from: tx.from.toLowerCase(), value, timestamp: tx.timestamp, hash: tx.hash });
+      } else if (tx.from.toLowerCase() === userAddress) {
+        // Outgoing
+        timeline.push({ type: 'out', to: tx.to.toLowerCase(), from: tx.from, value, timestamp: tx.timestamp, hash: tx.hash });
+      }
+    }
+
+    // Sort by timestamp
+    timeline.sort((a, b) => a.timestamp - b.timestamp);
+
+    // Detect sweep pattern: incoming followed by outgoing within 10 minutes to same address
+    const sweepEvents: { inTx: string; outTx: string; sweeperAddress: string; timeDelta: number }[] = [];
+    const sweeperAddresses: Record<string, number> = {};
+
+    for (let i = 0; i < timeline.length - 1; i++) {
+      const current = timeline[i];
+      
+      if (current.type !== 'in') continue;
+
+      // Look for outgoing transaction shortly after
+      for (let j = i + 1; j < timeline.length && j <= i + 5; j++) {
+        const next = timeline[j];
+        
+        if (next.type !== 'out') continue;
+        
+        const timeDelta = next.timestamp - current.timestamp;
+        
+        // If outgoing is within 10 minutes of incoming
+        if (timeDelta >= 0 && timeDelta <= 600) {
+          sweepEvents.push({
+            inTx: current.hash,
+            outTx: next.hash,
+            sweeperAddress: next.to,
+            timeDelta,
+          });
+          
+          sweeperAddresses[next.to] = (sweeperAddresses[next.to] || 0) + 1;
+          break;
+        }
+      }
+    }
+
+    // If we found 2+ sweep events to the same address, it's a sweeper bot
+    const confirmedSweeper = Object.entries(sweeperAddresses).find(([_, count]) => count >= 2);
+
+    if (confirmedSweeper && !isLegitimateContract(confirmedSweeper[0])) {
+      const [sweeperAddress, sweepCount] = confirmedSweeper;
+      const isCurrentlyEmpty = balanceWei < BigInt('1000000000000000'); // < 0.001 ETH
+
+      // Calculate how fast the sweeps happen on average
+      const avgTimeDelta = sweepEvents
+        .filter(e => e.sweeperAddress === sweeperAddress)
+        .reduce((sum, e) => sum + e.timeDelta, 0) / sweepCount;
+
+      return {
+        id: `sweeper-bot-${Date.now()}`,
+        type: 'PRIVATE_KEY_LEAK',
+        severity: 'CRITICAL',
+        title: '🚨 SWEEPER BOT DETECTED - Private Key Compromised',
+        description: `Your wallet is being monitored by an automated sweeper bot. Any funds sent to this wallet are immediately stolen (average sweep time: ${Math.round(avgTimeDelta)} seconds). The attacker has your private key. ${sweepCount} sweep events detected. DO NOT send any more funds to this wallet.`,
+        technicalDetails: `Sweeper Address: ${sweeperAddress}\nSweep Events: ${sweepCount}\nAverage Response Time: ${Math.round(avgTimeDelta)}s\nWallet Empty: ${isCurrentlyEmpty ? 'Yes' : 'No'}`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: [sweeperAddress],
+        relatedTransactions: sweepEvents.map(e => e.outTx).slice(0, 10),
+        ongoingRisk: true,
+        attackerInfo: {
+          address: sweeperAddress,
+          type: 'SWEEPER_BOT',
+          sweepCount,
+          avgResponseTime: Math.round(avgTimeDelta),
+        },
+      };
+    }
+
+    // Check for single large sweep (all funds out quickly after large incoming)
+    const largeIncoming = timeline.filter(t => t.type === 'in' && t.value > BigInt('100000000000000000')); // > 0.1 ETH
+    
+    for (const incoming of largeIncoming) {
+      const incomingIdx = timeline.indexOf(incoming);
+      
+      for (let j = incomingIdx + 1; j < timeline.length && j <= incomingIdx + 3; j++) {
+        const outgoing = timeline[j];
+        if (outgoing.type !== 'out') continue;
+        
+        const timeDelta = outgoing.timestamp - incoming.timestamp;
+        const valueRatio = Number(outgoing.value) / Number(incoming.value);
+        
+        // If >80% of incoming value was sent out within 30 minutes
+        if (timeDelta >= 0 && timeDelta <= 1800 && valueRatio > 0.8 && !isLegitimateContract(outgoing.to)) {
+          return {
+            id: `rapid-sweep-${Date.now()}`,
+            type: 'PRIVATE_KEY_LEAK',
+            severity: 'CRITICAL',
+            title: '⚠️ Rapid Fund Sweep Detected',
+            description: `${ethers.formatEther(incoming.value)} ETH was received and ${(valueRatio * 100).toFixed(1)}% was immediately sent out within ${Math.round(timeDelta / 60)} minutes. This pattern strongly suggests your private key is compromised.`,
+            technicalDetails: `Sweeper Address: ${outgoing.to}\nIncoming TX: ${incoming.hash}\nOutgoing TX: ${outgoing.hash}\nTime Delta: ${timeDelta}s`,
+            detectedAt: new Date().toISOString(),
+            relatedAddresses: [outgoing.to],
+            relatedTransactions: [incoming.hash, outgoing.hash],
+            ongoingRisk: true,
           };
         }
       }
@@ -990,6 +1138,7 @@ export class EVMAnalyzer {
 
   private generateEducationalContent(threats: DetectedThreat[]) {
     const primaryType = threats[0]?.type || 'UNKNOWN';
+    const hasSweeperBot = threats.some(t => t.attackerInfo?.type === 'SWEEPER_BOT');
 
     const explanations: Record<string, any> = {
       WALLET_DRAINER: {
@@ -998,7 +1147,12 @@ export class EVMAnalyzer {
         ongoingDamage: 'If the attacker has your private key, they can drain any new funds deposited.',
         recoverableInfo: 'Assets already stolen cannot be recovered. Focus on protecting remaining assets.',
       },
-      PRIVATE_KEY_LEAK: {
+      PRIVATE_KEY_LEAK: hasSweeperBot ? {
+        whatHappened: '🚨 SWEEPER BOT DETECTED: Your private key is compromised and an automated bot is monitoring your wallet 24/7.',
+        howItWorks: 'The attacker runs a program that watches your wallet for incoming funds. Within seconds of any deposit, their bot automatically creates and signs a transaction to steal the funds. Because they have your private key, there is NO WAY to stop this.',
+        ongoingDamage: 'ANY funds sent to this wallet will be stolen within seconds. The bot never sleeps - it monitors continuously.',
+        recoverableInfo: 'This wallet is PERMANENTLY COMPROMISED and cannot be recovered. You MUST abandon it and create a completely new wallet with a fresh seed phrase. Never use or deposit to this address again.',
+      } : {
         whatHappened: 'Your private key or seed phrase was likely compromised, giving the attacker full control.',
         howItWorks: 'Key leaks happen through phishing, malware, fake wallet apps, or accidentally exposing your key.',
         ongoingDamage: 'The attacker has COMPLETE control. Any funds deposited can be stolen instantly.',
@@ -1012,6 +1166,14 @@ export class EVMAnalyzer {
       },
     };
 
+    // Special tips for sweeper bot attacks
+    const sweeperBotTips = hasSweeperBot ? [
+      { title: '🚨 ABANDON THIS WALLET IMMEDIATELY', description: 'Create a new wallet with a fresh seed phrase. This wallet cannot be saved.', importance: 'CRITICAL' as RiskLevel },
+      { title: 'Never deposit to this address again', description: 'Any funds sent here will be stolen within seconds by the sweeper bot.', importance: 'CRITICAL' as RiskLevel },
+      { title: 'How did this happen?', description: 'Your seed phrase was likely exposed through phishing, malware, fake wallet apps, or unsafe storage. Review your security practices.', importance: 'HIGH' as RiskLevel },
+      { title: 'Protect your new wallet', description: 'Use a hardware wallet, never enter your seed phrase online, and verify all websites.', importance: 'HIGH' as RiskLevel },
+    ] : [];
+
     return {
       attackExplanation: explanations[primaryType] || {
         whatHappened: 'Suspicious activity was detected on your wallet.',
@@ -1019,12 +1181,18 @@ export class EVMAnalyzer {
         ongoingDamage: 'Monitor your wallet closely.',
         recoverableInfo: 'Consider moving assets to a fresh wallet.',
       },
-      preventionTips: [
+      preventionTips: hasSweeperBot ? sweeperBotTips : [
         { title: 'Never share your seed phrase', description: 'No legitimate service will ever ask for it.', importance: 'CRITICAL' as RiskLevel },
         { title: 'Verify before signing', description: 'Read transaction details carefully.', importance: 'HIGH' as RiskLevel },
         { title: 'Use hardware wallets', description: 'Keep high-value assets in cold storage.', importance: 'HIGH' as RiskLevel },
       ],
-      securityChecklist: [
+      securityChecklist: hasSweeperBot ? [
+        { id: '1', category: 'URGENT', item: 'Create a new wallet with fresh seed phrase', completed: false },
+        { id: '2', category: 'URGENT', item: 'Stop using this compromised wallet', completed: false },
+        { id: '3', category: 'URGENT', item: 'Update all accounts that use this address', completed: false },
+        { id: '4', category: 'Security', item: 'Use hardware wallet for new wallet', completed: false },
+        { id: '5', category: 'Security', item: 'Enable 2FA on all crypto accounts', completed: false },
+      ] : [
         { id: '1', category: 'Wallet', item: 'Use hardware wallet', completed: false },
         { id: '2', category: 'Wallet', item: 'Backup seed phrase securely', completed: false },
         { id: '3', category: 'Approvals', item: 'Review approvals regularly', completed: false },

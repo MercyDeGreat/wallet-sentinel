@@ -1,9 +1,20 @@
 /** @type {import('next').NextConfig} */
+
 const nextConfig = {
   reactStrictMode: true,
+  
+  // Disable source maps in production to prevent code inspection
+  productionBrowserSourceMaps: false,
+  
+  // Minification provides basic code protection
+  swcMinify: true,
+  
   images: {
     domains: ['raw.githubusercontent.com', 'assets.coingecko.com'],
+    // Use unoptimized images for Cloudflare Pages
+    unoptimized: true,
   },
+  
   async headers() {
     return [
       {
@@ -17,7 +28,30 @@ const nextConfig = {
       },
     ];
   },
+  
+  webpack: (config, { isServer }) => {
+    // Handle missing modules for WalletConnect/MetaMask SDK
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        'pino-pretty': false,
+        'lokijs': false,
+      };
+      
+      // Properly ignore react-native-async-storage
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        '@react-native-async-storage/async-storage': false,
+      };
+    }
+    
+    return config;
+  },
+  
+  // Enable experimental optimizations
+  experimental: {
+    optimizePackageImports: ['lucide-react', 'framer-motion'],
+  },
 };
 
 module.exports = nextConfig;
-
