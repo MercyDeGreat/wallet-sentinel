@@ -7,6 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "pages:build": "npx @cloudflare/next-on-pages",
+    "pages:dev": "npx wrangler pages dev --compatibility-flags=nodejs_compat -- npm run dev",
     "start": "next start",
     "start:prod": "node server.js",
     "deploy:prepare": "npm run build && node scripts/prepare-deploy.js",
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "@cloudflare/next-on-pages": "^1.8.0",
+    "wrangler": "^3.22.0",
     "@types/node": "^20.10.5",
     "@types/react": "^18.2.45",
     "@types/react-dom": "^18.2.18",

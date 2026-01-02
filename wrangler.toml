@@ -1,0 +1,10 @@
+# Cloudflare Pages configuration for Securnex
+name = "securnex"
+compatibility_date = "2024-01-01"
+
+# Enable Node.js compatibility for ethers.js and solana/web3.js
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+NODE_ENV = "production"
+
