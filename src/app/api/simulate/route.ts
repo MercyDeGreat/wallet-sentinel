@@ -1,13 +1,13 @@
+// Edge Runtime - MUST be first for Cloudflare Pages
+export const runtime = 'edge';
+export const dynamic = 'force-dynamic';
+
 // ============================================
 // TRANSACTION SIMULATION API
 // ============================================
 // POST /api/simulate
 // Simulates a recovery transaction to check for drainer interception.
 // This is a READ-ONLY operation that does not execute transactions.
-
-// Edge Runtime for Cloudflare Pages
-export const runtime = 'edge';
-export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ethers } from 'ethers';

@@ -1,13 +1,13 @@
+// Edge Runtime - MUST be first for Cloudflare Pages
+export const runtime = 'edge';
+export const dynamic = 'force-dynamic';
+
 // ============================================
 // WALLET ANALYSIS API ENDPOINT
 // ============================================
 // POST /api/analyze
 // Analyzes a wallet address for security threats.
 // All operations are READ-ONLY and defensive.
-
-// Edge Runtime for Cloudflare Pages
-export const runtime = 'edge';
-export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { EVMAnalyzer } from '@/lib/analyzers/evm-analyzer';
