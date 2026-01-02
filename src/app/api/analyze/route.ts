@@ -5,9 +5,8 @@
 // Analyzes a wallet address for security threats.
 // All operations are READ-ONLY and defensive.
 
-// Use Node.js runtime for SmarterASP.NET (IISNode)
-// For Cloudflare Pages, change to: export const runtime = 'edge';
-export const runtime = 'nodejs';
+// Edge Runtime for Cloudflare Pages
+export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';

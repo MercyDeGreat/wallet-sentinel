@@ -13,8 +13,8 @@ const nextConfig = {
   // Enable SWC minification - obfuscates variable names
   swcMinify: true,
   
-  // Standalone output for SmarterASP.NET / IISNode deployment
-  output: 'standalone',
+  // For Cloudflare Pages - no standalone output needed
+  // output: 'standalone', // Uncomment for SmarterASP.NET
   
   // Compress output
   compress: true,
