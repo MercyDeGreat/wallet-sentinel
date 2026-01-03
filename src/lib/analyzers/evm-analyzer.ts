@@ -37,6 +37,14 @@ import {
   isLegitimateContract,
   getInfrastructureCategory,
 } from '../detection/malicious-database';
+import {
+  performAggregatedThreatCheck,
+  buildKnownMaliciousSet,
+  checkGoPlusAddressSecurity,
+  analyzeContractBytecode,
+  type AggregatedThreatCheck,
+  type ContractAnalysis,
+} from '../detection/threat-intelligence';
 
 // ============================================
 // INTERFACES
@@ -150,12 +158,17 @@ export class EVMAnalyzer {
     // COMPREHENSIVE THREAT DETECTION
     // ============================================
 
+    // 0. EXTERNAL THREAT INTELLIGENCE CHECK (GoPlus, bytecode analysis)
+    // This catches zero-day drainers and proxy clones not in our static database
+    const externalThreats = await this.checkExternalThreatIntelligence(transactions, tokenTransfers, normalizedAddress);
+    threats.push(...externalThreats);
+
     // 1. DETECT COMPLETE WALLET DRAIN (Private Key Compromise or Drainer)
     const drainThreat = this.detectWalletDrain(transactions, tokenTransfers, currentBalance, normalizedAddress);
     if (drainThreat) threats.push(drainThreat);
 
     // 2. DETECT KNOWN MALICIOUS INTERACTIONS
-    const maliciousThreats = this.detectMaliciousInteractions(transactions, tokenTransfers, normalizedAddress);
+    const maliciousThreats = await this.detectMaliciousInteractions(transactions, tokenTransfers, normalizedAddress);
     threats.push(...maliciousThreats);
 
     // 3. DETECT SUSPICIOUS APPROVAL PATTERNS
@@ -449,9 +462,10 @@ export class EVMAnalyzer {
     // Sort by timestamp
     timeline.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Detect sweep pattern: incoming followed by outgoing within 10 minutes to same address
-    const sweepEvents: { inTx: string; outTx: string; sweeperAddress: string; timeDelta: number }[] = [];
-    const sweeperAddresses: Record<string, number> = {};
+    // Detect sweep pattern: incoming followed by outgoing within 60 minutes to same address
+    // IMPROVED: Uses confidence scoring based on speed
+    const sweepEvents: { inTx: string; outTx: string; sweeperAddress: string; timeDelta: number; confidence?: number }[] = [];
+    const sweeperAddresses: Record<string, number> = {}; // Now stores weighted confidence scores
 
     for (let i = 0; i < timeline.length - 1; i++) {
       const current = timeline[i];
@@ -459,39 +473,51 @@ export class EVMAnalyzer {
       if (current.type !== 'in') continue;
 
       // Look for outgoing transaction shortly after
-      for (let j = i + 1; j < timeline.length && j <= i + 5; j++) {
+      // IMPROVED: Expanded window from 10 minutes to 60 minutes with confidence decay
+      for (let j = i + 1; j < timeline.length && j <= i + 10; j++) {
         const next = timeline[j];
         
         if (next.type !== 'out') continue;
         
         const timeDelta = next.timestamp - current.timestamp;
         
-        // If outgoing is within 10 minutes of incoming
-        if (timeDelta >= 0 && timeDelta <= 600) {
+        // EXPANDED: Up to 60 minutes (3600 seconds) with scoring
+        // Faster sweeps = higher confidence
+        const MAX_SWEEP_WINDOW = 3600; // 60 minutes
+        
+        if (timeDelta >= 0 && timeDelta <= MAX_SWEEP_WINDOW) {
+          // Calculate confidence score based on speed
+          // 0-60 seconds = 1.0, 60 minutes = 0.3
+          const confidenceScore = Math.max(0.3, 1 - (timeDelta / MAX_SWEEP_WINDOW) * 0.7);
+          
           sweepEvents.push({
             inTx: current.hash,
             outTx: next.hash,
             sweeperAddress: next.to,
             timeDelta,
+            confidence: confidenceScore, // Track confidence
           });
           
-          sweeperAddresses[next.to] = (sweeperAddresses[next.to] || 0) + 1;
+          // Weight by confidence
+          sweeperAddresses[next.to] = (sweeperAddresses[next.to] || 0) + confidenceScore;
           break;
         }
       }
     }
 
-    // If we found 2+ sweep events to the same address, it's a sweeper bot
-    const confirmedSweeper = Object.entries(sweeperAddresses).find(([_, count]) => count >= 2);
+    // IMPROVED: Use confidence-weighted threshold
+    // A score of 2.0+ indicates high-confidence sweeper pattern
+    // This accounts for time decay - slower sweeps need more events to trigger
+    const confirmedSweeper = Object.entries(sweeperAddresses).find(([_, score]) => score >= 1.5);
 
     if (confirmedSweeper && !isLegitimateContract(confirmedSweeper[0])) {
-      const [sweeperAddress, sweepCount] = confirmedSweeper;
+      const [sweeperAddress, confidenceScore] = confirmedSweeper;
       const isCurrentlyEmpty = balanceWei < BigInt('1000000000000000'); // < 0.001 ETH
 
       // Calculate how fast the sweeps happen on average
-      const avgTimeDelta = sweepEvents
-        .filter(e => e.sweeperAddress === sweeperAddress)
-        .reduce((sum, e) => sum + e.timeDelta, 0) / sweepCount;
+      const relevantEvents = sweepEvents.filter(e => e.sweeperAddress === sweeperAddress);
+      const sweepCount = relevantEvents.length;
+      const avgTimeDelta = relevantEvents.reduce((sum, e) => sum + e.timeDelta, 0) / sweepCount;
 
       return {
         id: `sweeper-bot-${Date.now()}`,
@@ -561,11 +587,11 @@ export class EVMAnalyzer {
   // The key insight is: receiving funds ≠ malicious behavior
   // Only flag when there is ACTIVE malicious behavior by the analyzed wallet.
 
-  private detectMaliciousInteractions(
+  private async detectMaliciousInteractions(
     transactions: TransactionData[],
     tokenTransfers: TokenTransfer[],
     userAddress: string
-  ): DetectedThreat[] {
+  ): Promise<DetectedThreat[]> {
     const threats: DetectedThreat[] = [];
     const flaggedAddresses = new Set<string>();
 
@@ -691,8 +717,7 @@ export class EVMAnalyzer {
     // - Wallet used transferFrom() to drain assets
     // - Wallet deployed known drainer bytecode
     //
-    // Note: This pattern is rare for end-user wallets. Usually, attackers use
-    // fresh addresses. This check is here for completeness.
+    // IMPROVED: Now checks contract type to avoid flagging legitimate vaults/aggregators
     
     // Check for transferFrom calls where this wallet was the initiator (potential drainer)
     const transferFromCalls = transactions.filter(tx => {
@@ -701,24 +726,191 @@ export class EVMAnalyzer {
       return tx.methodId?.startsWith('0x23b872dd');
     });
 
-    // If wallet called transferFrom more than 10 times to pull tokens from OTHER wallets,
-    // this is suspicious and worth flagging (potential drainer behavior)
+    // Only flag if threshold exceeded AND it's not a known contract type
     if (transferFromCalls.length >= 10) {
-      // This is actual drainer behavior - wallet is INITIATING drains
-      threats.push({
-        id: `potential-drainer-behavior-${Date.now()}`,
-        type: 'WALLET_DRAINER',
-        severity: 'CRITICAL',
-        title: '⚠️ Potential Drainer Behavior Detected',
-        description: `This wallet initiated ${transferFromCalls.length} transferFrom calls, which is a pattern consistent with drainer contracts pulling tokens from victims.`,
-        technicalDetails: `TransferFrom calls: ${transferFromCalls.length}\nThis wallet may be operating as a drainer.`,
-        detectedAt: new Date().toISOString(),
-        relatedAddresses: [],
-        relatedTransactions: transferFromCalls.slice(0, 5).map(tx => tx.hash),
-        ongoingRisk: true,
-      });
+      // Check if this address is a known legitimate contract type
+      const contractType = await this.getContractType(userAddress);
+      
+      // IMPORTANT: Don't flag if it's a vault, DEX, or aggregator
+      // These legitimately use transferFrom for deposits/swaps
+      const legitimateTypes = ['VAULT', 'DEX_ROUTER', 'DEX_POOL', 'TOKEN', 'MULTISIG', 'NFT_MARKET'];
+      
+      if (!legitimateTypes.includes(contractType)) {
+        // Additional check: Did all transfers go to the same beneficiary? (drainer pattern)
+        const recipients = new Set<string>();
+        for (const tx of transferFromCalls) {
+          // Extract recipient from transferFrom calldata if possible
+          if (tx.input && tx.input.length >= 138) {
+            // transferFrom(from, to, amount) - 'to' is at bytes 36-68 (after selector + from)
+            const to = '0x' + tx.input.slice(34, 74).toLowerCase();
+            recipients.add(to);
+          }
+        }
+        
+        // High confidence if single recipient (classic drainer pattern)
+        const singleRecipient = recipients.size === 1;
+        const severity: RiskLevel = singleRecipient ? 'CRITICAL' : 'HIGH';
+        
+        threats.push({
+          id: `potential-drainer-behavior-${Date.now()}`,
+          type: 'WALLET_DRAINER',
+          severity,
+          title: singleRecipient 
+            ? '🚨 Drainer Contract Detected'
+            : '⚠️ Potential Drainer Behavior Detected',
+          description: singleRecipient
+            ? `This wallet initiated ${transferFromCalls.length} transferFrom calls, all sending tokens to the same address. This is a strong drainer pattern.`
+            : `This wallet initiated ${transferFromCalls.length} transferFrom calls, which is a pattern consistent with drainer contracts pulling tokens from victims.`,
+          technicalDetails: `TransferFrom calls: ${transferFromCalls.length}\nUnique recipients: ${recipients.size}\nContract type: ${contractType}`,
+          detectedAt: new Date().toISOString(),
+          relatedAddresses: Array.from(recipients).slice(0, 5),
+          relatedTransactions: transferFromCalls.slice(0, 5).map(tx => tx.hash),
+          ongoingRisk: true,
+        });
+      }
     }
 
+    return threats;
+  }
+
+  // ============================================
+  // CONTRACT TYPE DETECTION (for false positive prevention)
+  // ============================================
+  
+  private async getContractType(address: string): Promise<string> {
+    try {
+      // First check if it's in our whitelist
+      const legitimateLabel = isLegitimateContract(address);
+      if (legitimateLabel) {
+        const category = getInfrastructureCategory(address);
+        if (category) return category;
+      }
+      
+      // Otherwise, analyze bytecode
+      const knownMalicious = buildKnownMaliciousSet();
+      const analysis = await analyzeContractBytecode(address, this.chain, knownMalicious);
+      
+      return analysis.contractType || 'UNKNOWN';
+    } catch (error) {
+      return 'UNKNOWN';
+    }
+  }
+
+  // ============================================
+  // EXTERNAL THREAT INTELLIGENCE
+  // ============================================
+  // Checks addresses against external threat feeds (GoPlus Labs)
+  // and analyzes bytecode for proxy clones of known drainers.
+  // This catches zero-day attacks not in our static database.
+
+  private async checkExternalThreatIntelligence(
+    transactions: TransactionData[],
+    tokenTransfers: TokenTransfer[],
+    userAddress: string
+  ): Promise<DetectedThreat[]> {
+    const threats: DetectedThreat[] = [];
+    const checkedAddresses = new Set<string>();
+    const knownMalicious = buildKnownMaliciousSet();
+    
+    // Get chain ID for API calls
+    const chainIdMap: Record<string, number> = {
+      ethereum: 1,
+      base: 8453,
+      bnb: 56,
+    };
+    const chainId = chainIdMap[this.chain] || 1;
+    
+    // Collect unique addresses the user interacted with (limit to prevent rate limiting)
+    const addressesToCheck: string[] = [];
+    
+    for (const tx of transactions.slice(0, 50)) {
+      if (!tx?.to || !tx?.from) continue;
+      
+      // Check addresses user SENT to (potential scams they interacted with)
+      if (tx.from.toLowerCase() === userAddress && !checkedAddresses.has(tx.to.toLowerCase())) {
+        // Skip known legitimate
+        if (!isLegitimateContract(tx.to)) {
+          addressesToCheck.push(tx.to.toLowerCase());
+          checkedAddresses.add(tx.to.toLowerCase());
+        }
+      }
+    }
+    
+    // Limit API calls (GoPlus free tier: 100/day)
+    const maxChecks = Math.min(5, addressesToCheck.length);
+    
+    for (let i = 0; i < maxChecks; i++) {
+      const address = addressesToCheck[i];
+      
+      try {
+        // Run threat checks in parallel
+        const [goPlusResult, bytecodeAnalysis] = await Promise.all([
+          checkGoPlusAddressSecurity(address, chainId),
+          analyzeContractBytecode(address, this.chain, knownMalicious),
+        ]);
+        
+        // GoPlus flagged as malicious
+        if (goPlusResult?.isMalicious) {
+          threats.push({
+            id: `external-intel-goplus-${address.slice(0, 10)}`,
+            type: 'WALLET_DRAINER',
+            severity: goPlusResult.riskLevel,
+            title: `🔍 External Threat Intel: ${goPlusResult.details.split(',')[0]}`,
+            description: `GoPlus Labs flagged this address as malicious: ${goPlusResult.details}. You interacted with this address.`,
+            technicalDetails: `Address: ${address}\nSource: ${goPlusResult.source}\nConfidence: ${goPlusResult.confidence}%`,
+            detectedAt: new Date().toISOString(),
+            relatedAddresses: [address],
+            relatedTransactions: transactions.filter(tx => tx.to?.toLowerCase() === address).slice(0, 5).map(tx => tx.hash),
+            ongoingRisk: true,
+          });
+        }
+        
+        // Bytecode analysis: proxy clone of known drainer
+        if (bytecodeAnalysis?.implementationIsMalicious) {
+          threats.push({
+            id: `proxy-clone-${address.slice(0, 10)}`,
+            type: 'WALLET_DRAINER',
+            severity: 'CRITICAL',
+            title: '🚨 Proxy Clone of Known Drainer Detected',
+            description: `This contract is a minimal proxy (clone) pointing to a known drainer implementation. This is a common evasion technique.`,
+            technicalDetails: `Proxy Address: ${address}\nMalicious Implementation: ${bytecodeAnalysis.proxyImplementation}`,
+            detectedAt: new Date().toISOString(),
+            relatedAddresses: [address, bytecodeAnalysis.proxyImplementation || ''],
+            relatedTransactions: transactions.filter(tx => tx.to?.toLowerCase() === address).slice(0, 5).map(tx => tx.hash),
+            ongoingRisk: true,
+          });
+        }
+        
+        // Unverified contract with suspicious pattern
+        if (bytecodeAnalysis?.isContract && 
+            !bytecodeAnalysis.isVerified && 
+            bytecodeAnalysis.contractType === 'UNKNOWN') {
+          // Only flag if user sent significant value
+          const sentValue = transactions
+            .filter(tx => tx.to?.toLowerCase() === address && tx.from?.toLowerCase() === userAddress)
+            .reduce((sum, tx) => sum + BigInt(tx.value || '0'), BigInt(0));
+          
+          if (sentValue > BigInt('100000000000000000')) { // > 0.1 ETH
+            threats.push({
+              id: `unverified-contract-${address.slice(0, 10)}`,
+              type: 'ROGUE_CONTRACT_INTERACTION',
+              severity: 'MEDIUM',
+              title: '⚠️ Interaction with Unverified Contract',
+              description: `You sent ${ethers.formatEther(sentValue)} ETH to an unverified contract with unknown purpose. This requires caution.`,
+              technicalDetails: `Address: ${address}\nVerified: No\nContract Type: Unknown`,
+              detectedAt: new Date().toISOString(),
+              relatedAddresses: [address],
+              relatedTransactions: transactions.filter(tx => tx.to?.toLowerCase() === address).slice(0, 5).map(tx => tx.hash),
+              ongoingRisk: false,
+            });
+          }
+        }
+      } catch (error) {
+        // Continue on error - external APIs may be unavailable
+        console.log(`[ThreatIntel] Check failed for ${address}:`, error);
+      }
+    }
+    
     return threats;
   }
 
