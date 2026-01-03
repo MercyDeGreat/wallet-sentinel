@@ -36,6 +36,7 @@ import {
   isInfiniteApproval,
   isLegitimateContract,
   getInfrastructureCategory,
+  isHighVolumeNeutralAddress,
 } from '../detection/malicious-database';
 import {
   performAggregatedThreatCheck,
@@ -760,14 +761,34 @@ export class EVMAnalyzer {
 
     // Only flag if threshold exceeded AND it's not a known contract type
     if (transferFromCalls.length >= 10) {
-      // Check if this address is a known legitimate contract type
-      const contractType = await this.getContractType(userAddress);
+      // ============================================
+      // FALSE POSITIVE PREVENTION: Check contract type and verification
+      // ============================================
+      // WHY: New DEXs, vaults, and aggregators use transferFrom legitimately.
+      //      Before flagging, we check:
+      //      1. Is it a known legitimate contract type?
+      //      2. Is the contract verified on Etherscan?
+      //      3. Is it a high-volume neutral address (CEX, LP pool)?
       
-      // IMPORTANT: Don't flag if it's a vault, DEX, or aggregator
-      // These legitimately use transferFrom for deposits/swaps
+      const contractType = await this.getContractType(userAddress);
       const legitimateTypes = ['VAULT', 'DEX_ROUTER', 'DEX_POOL', 'TOKEN', 'MULTISIG', 'NFT_MARKET'];
       
-      if (!legitimateTypes.includes(contractType)) {
+      // Check if it's a high-volume neutral address (CEX, LP pool, etc.)
+      const neutralCheck = isHighVolumeNeutralAddress(userAddress);
+      
+      // Check contract verification status (verified = less suspicious)
+      const isVerifiedContract = await this.checkContractVerification(userAddress);
+      
+      // Skip flagging if:
+      // 1. It's a known legitimate type
+      // 2. It's a high-volume neutral address
+      // 3. It's a verified contract with DEX/vault patterns
+      const shouldSkip = 
+        legitimateTypes.includes(contractType) ||
+        neutralCheck.isNeutral ||
+        (isVerifiedContract && ['DEX_ROUTER', 'VAULT', 'TOKEN'].includes(contractType));
+      
+      if (!shouldSkip) {
         // Additional check: Did all transfers go to the same beneficiary? (drainer pattern)
         const recipients = new Set<string>();
         for (const tx of transferFromCalls) {
@@ -781,7 +802,11 @@ export class EVMAnalyzer {
         
         // High confidence if single recipient (classic drainer pattern)
         const singleRecipient = recipients.size === 1;
-        const severity: RiskLevel = singleRecipient ? 'CRITICAL' : 'HIGH';
+        
+        // Additional safety: If verified and multiple recipients, lower severity
+        const severity: RiskLevel = singleRecipient 
+          ? 'CRITICAL' 
+          : (isVerifiedContract ? 'MEDIUM' : 'HIGH');
         
         threats.push({
           id: `potential-drainer-behavior-${Date.now()}`,
@@ -793,7 +818,7 @@ export class EVMAnalyzer {
           description: singleRecipient
             ? `This wallet initiated ${transferFromCalls.length} transferFrom calls, all sending tokens to the same address. This is a strong drainer pattern.`
             : `This wallet initiated ${transferFromCalls.length} transferFrom calls, which is a pattern consistent with drainer contracts pulling tokens from victims.`,
-          technicalDetails: `TransferFrom calls: ${transferFromCalls.length}\nUnique recipients: ${recipients.size}\nContract type: ${contractType}`,
+          technicalDetails: `TransferFrom calls: ${transferFromCalls.length}\nUnique recipients: ${recipients.size}\nContract type: ${contractType}\nVerified: ${isVerifiedContract ? 'Yes' : 'No'}`,
           detectedAt: new Date().toISOString(),
           relatedAddresses: Array.from(recipients).slice(0, 5),
           relatedTransactions: transferFromCalls.slice(0, 5).map(tx => tx.hash),
@@ -825,6 +850,34 @@ export class EVMAnalyzer {
       return analysis.contractType || 'UNKNOWN';
     } catch (error) {
       return 'UNKNOWN';
+    }
+  }
+  
+  // ============================================
+  // CONTRACT VERIFICATION CHECK
+  // ============================================
+  // WHY: Verified contracts on Etherscan are less suspicious.
+  // Drainers typically use unverified contracts to hide their code.
+  // If a contract is verified AND has legitimate function signatures,
+  // it's much less likely to be a drainer.
+  
+  private async checkContractVerification(address: string): Promise<boolean> {
+    try {
+      const apiKey = this.explorerApiKey || '';
+      const url = `${this.explorerApiUrl}?module=contract&action=getabi&address=${address}&apikey=${apiKey}`;
+      
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(5000),
+        headers: { 'Accept': 'application/json' },
+      });
+      
+      const data = await response.json();
+      
+      // Status '1' means ABI is available (contract is verified)
+      return data.status === '1';
+    } catch (error) {
+      // On error, assume not verified (safer default)
+      return false;
     }
   }
 
@@ -1187,6 +1240,35 @@ export class EVMAnalyzer {
     //      - An airdrop/dust attack
     //      None of these make the receiver malicious.
     if (directionalAnalysis.receivedFromMalicious && !directionalAnalysis.sentToMalicious) {
+      // ============================================
+      // DUST ATTACK SUPPRESSION
+      // ============================================
+      // WHY: Dust attacks are unsolicited tiny transfers from attackers.
+      // They're common and not the user's fault. We suppress warnings for:
+      // - Low count (< 3 transactions)
+      // - Low total value
+      const isDustAttack = directionalAnalysis.receivedFromMaliciousCount <= 2;
+      const receivedValue = BigInt(directionalAnalysis.receivedFromMaliciousValue || '0');
+      const isLowValue = receivedValue < BigInt('10000000000000000'); // < 0.01 ETH
+      
+      if (isDustAttack && isLowValue) {
+        // Suppress warning for dust attacks - treat as UNKNOWN (safe)
+        evidence.push({
+          type: 'INBOUND_FROM_DRAINER',
+          description: 'Received small/unsolicited transfer from flagged address (dust attack) - this is common and NOT your fault',
+          weight: 'LOW',
+        });
+        
+        return {
+          role: 'UNKNOWN',  // Treat as normal user, not even INDIRECT_EXPOSURE
+          confidence: 'HIGH',
+          evidence,
+          isMalicious: false,
+          isInfrastructure: false,
+          isServiceFeeReceiver: false,
+        };
+      }
+      
       evidence.push({
         type: 'INBOUND_FROM_DRAINER',
         description: `Received ${directionalAnalysis.receivedFromMaliciousCount} transaction(s) from flagged addresses - NOT indicative of malicious behavior`,
@@ -1322,6 +1404,10 @@ export class EVMAnalyzer {
         return `This wallet received ${directionalAnalysis.receivedFromMaliciousCount} transaction(s) from flagged addresses but showed no malicious behavior. Receiving funds is NOT evidence of wrongdoing.`;
         
       default:
+        // Check for dust attack suppression
+        if (classification.evidence.some(e => e.description?.includes('dust attack'))) {
+          return 'This wallet received a small unsolicited transfer from a flagged address (dust attack). This is extremely common and does NOT indicate compromise. No action needed.';
+        }
         if (classification.evidence.some(e => e.type === 'NORMAL_ACTIVITY')) {
           return 'No malicious activity detected. This wallet appears to be operating normally.';
         }

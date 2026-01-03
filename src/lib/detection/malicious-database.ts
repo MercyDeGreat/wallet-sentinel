@@ -628,6 +628,34 @@ export const KNOWN_LEGITIMATE_CONTRACTS: Record<string, string> = {
   '0xa9d1e08c7793af67e9d92fe308d5697fb81d3e43': 'Coinbase Commerce',
   
   // ============================================
+  // CEX HOT WALLETS (Neutral - not infrastructure, not malicious)
+  // ============================================
+  // These receive from millions of users including compromised ones.
+  // Receiving from compromised wallet ≠ being malicious.
+  '0x28c6c06298d514db089934071355e5743bf21d60': 'Binance Hot Wallet 14',
+  '0x21a31ee1afc51d94c2efccaa2092ad1028285549': 'Binance Hot Wallet 15',
+  '0xdfd5293d8e347dfe59e90efd55b2956a1343963d': 'Binance Hot Wallet 16',
+  '0x56eddb7aa87536c09ccc2793473599fd21a8b17f': 'Binance Hot Wallet 17',
+  '0x9696f59e4d72e237be84ffd425dcad154bf96976': 'Binance Hot Wallet 18',
+  '0x4976a4a02f38326660d17bf34b431dc6e2eb2327': 'Binance Hot Wallet 19',
+  '0xf977814e90da44bfa03b6295a0616a897441acec': 'Binance Hot Wallet 8',
+  '0x8894e0a0c962cb723c1976a4421c95949be2d4e3': 'Binance Hot Wallet 6',
+  '0xe2fc31f816a9b94326492132018c3aecc4a93ae1': 'Huobi Hot Wallet',
+  '0xab5c66752a9e8167967685f1450532fb96d5d24f': 'Huobi Hot Wallet 2',
+  '0x6cc5f688a315f3dc28a7781717a9a798a59fda7b': 'OKX Hot Wallet',
+  '0x98ec059dc3adfbdd63429454aeb0c990fba4a128': 'Kraken Hot Wallet',
+  '0x2910543af39aba0cd09dbb2d50200b3e800a63d2': 'Kraken Hot Wallet 13',
+  '0x6262998ced04146fa42253a5c0af90ca02dfd2a3': 'Crypto.com Hot Wallet',
+  '0x46340b20830761efd32832a74d7169b29feb9758': 'Crypto.com Hot Wallet 2',
+  '0xa910f92acdaf488fa6ef02174fb86208ad7722ba': 'Poloniex Hot Wallet',
+  '0x32be343b94f860124dc4fee278fdcbd38c102d88': 'Poloniex Hot Wallet 2',
+  '0xfbb1b73c4f0bda4f67dca266ce6ef42f520fbb98': 'Bittrex Hot Wallet',
+  '0x1151314c646ce4e0efd76d1af4760ae66a9fe30f': 'Bitfinex Hot Wallet',
+  '0x742d35cc6634c0532925a3b844bc454e4438f44e': 'Bitfinex Hot Wallet 2',
+  '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc': 'Uniswap V2: USDC-ETH Pool',
+  '0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852': 'Uniswap V2: ETH-USDT Pool',
+  
+  // ============================================
   // GNOSIS SAFE / MULTISIG
   // ============================================
   '0xd9db270c1b5e3bd161e8c8503c55ceabee709552': 'Gnosis Safe Singleton',
@@ -655,6 +683,8 @@ export type InfrastructureCategory =
   | 'TOKEN'         // Token contract
   | 'AGGREGATOR'    // Swap aggregator
   | 'MULTISIG'      // Multisig wallet
+  | 'CEX'           // Centralized exchange hot wallet
+  | 'LP_POOL'       // Liquidity pool
   | 'OTHER';
 
 export function getInfrastructureCategory(address: string): InfrastructureCategory | null {
@@ -664,9 +694,14 @@ export function getInfrastructureCategory(address: string): InfrastructureCatego
   if (!label) return null;
   
   // Categorize based on label keywords
+  // CEX hot wallets - these receive from millions of users
+  if (label.includes('Binance') || label.includes('Huobi') || label.includes('OKX') || 
+      label.includes('Kraken') || label.includes('Crypto.com') || label.includes('Poloniex') ||
+      label.includes('Bittrex') || label.includes('Bitfinex')) return 'CEX';
   if (label.includes('Router') || label.includes('Swap') || label.includes('Exchange')) return 'DEX';
   if (label.includes('Seaport') || label.includes('OpenSea') || label.includes('Blur') || label.includes('Marketplace')) return 'NFT_MARKET';
-  if (label.includes('Lending') || label.includes('Pool') || label.includes('Aave') || label.includes('Compound')) return 'LENDING';
+  if (label.includes('Lending') || label.includes('Aave') || label.includes('Compound')) return 'LENDING';
+  if (label.includes('Pool') && !label.includes('Lending')) return 'LP_POOL';
   if (label.includes('Bridge') || label.includes('Gateway') || label.includes('Wormhole')) return 'BRIDGE';
   if (label.includes('stETH') || label.includes('Staking') || label.includes('Lido')) return 'STAKING';
   if (label.includes('USDC') || label.includes('USDT') || label.includes('DAI') || label.includes('Token') || label.includes('WETH')) return 'TOKEN';
@@ -674,6 +709,30 @@ export function getInfrastructureCategory(address: string): InfrastructureCatego
   if (label.includes('Safe') || label.includes('Multisig')) return 'MULTISIG';
   
   return 'OTHER';
+}
+
+// ============================================
+// HIGH-VOLUME NEUTRAL ADDRESS CHECK
+// ============================================
+// These addresses are NOT infrastructure contracts but receive from many sources.
+// Used to prevent false positives for CEX hot wallets, LP pools, etc.
+
+export function isHighVolumeNeutralAddress(address: string): { isNeutral: boolean; label: string | null; category: InfrastructureCategory | null } {
+  const label = isLegitimateContract(address);
+  if (!label) {
+    return { isNeutral: false, label: null, category: null };
+  }
+  
+  const category = getInfrastructureCategory(address);
+  
+  // CEX hot wallets and LP pools are high-volume neutral
+  const neutralCategories: InfrastructureCategory[] = ['CEX', 'LP_POOL', 'DEX', 'BRIDGE', 'NFT_MARKET'];
+  
+  return {
+    isNeutral: category !== null && neutralCategories.includes(category),
+    label,
+    category,
+  };
 }
 
 export function isLegitimateContract(address: string): string | null {
