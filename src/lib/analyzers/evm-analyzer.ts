@@ -1,7 +1,14 @@
 // ============================================
 // EVM CHAIN ANALYZER (Ethereum, Base, BNB)
 // ============================================
-// Enhanced detection for wallet compromise, drainers, and approval abuse.
+// Behavioral threat detection with directional analysis.
+// 
+// CRITICAL FALSE POSITIVE PREVENTION:
+// - Receiving funds from compromised wallets ≠ being malicious
+// - High-volume addresses (service fee receivers) are NOT drainers
+// - Must analyze WHO initiated malicious calls, WHO benefited
+// - Infrastructure contracts (OpenSea, Uniswap) must never be flagged
+//
 // All operations are READ-ONLY.
 
 import { ethers } from 'ethers';
@@ -16,6 +23,11 @@ import {
   RecoveryPlan,
   RecoveryStep,
   AttackType,
+  WalletRole,
+  RiskScoreBreakdown,
+  RiskFactor,
+  RiskFactorType,
+  DirectionalAnalysis,
 } from '@/types';
 import {
   CHAIN_RPC_CONFIG,
@@ -23,6 +35,7 @@ import {
   isDrainerRecipient,
   isInfiniteApproval,
   isLegitimateContract,
+  getInfrastructureCategory,
 } from '../detection/malicious-database';
 
 // ============================================
@@ -537,6 +550,16 @@ export class EVMAnalyzer {
   // ============================================
   // DETECTION: MALICIOUS CONTRACT INTERACTIONS
   // ============================================
+  // 
+  // CRITICAL FALSE POSITIVE PREVENTION:
+  // This method now uses DIRECTIONAL analysis to distinguish:
+  // - VICTIM: Lost funds to drainer (should be warned, not flagged as attacker)
+  // - ATTACKER: Initiated malicious calls or received stolen funds
+  // - NEUTRAL: Interacted with same contracts as compromised wallets (NOT flagged)
+  // - SERVICE: Receives fees from many wallets (NOT flagged - e.g., 20% fee receiver)
+  //
+  // The key insight is: receiving funds ≠ malicious behavior
+  // Only flag when there is ACTIVE malicious behavior by the analyzed wallet.
 
   private detectMaliciousInteractions(
     transactions: TransactionData[],
@@ -546,58 +569,259 @@ export class EVMAnalyzer {
     const threats: DetectedThreat[] = [];
     const flaggedAddresses = new Set<string>();
 
-    // Check transactions
+    // Perform directional analysis to understand wallet's role
+    const directionalAnalysis = this.analyzeTransactionDirection(transactions, tokenTransfers, userAddress);
+
+    // ============================================
+    // CASE 1: User SENT assets TO a known malicious address
+    // ============================================
+    // This could mean:
+    // - User was phished (VICTIM)
+    // - User interacted with scam site (VICTIM)
+    // Severity: HIGH (user lost funds, but they are the victim)
+    
     for (const tx of transactions) {
       if (!tx?.to || !tx?.from || !tx?.hash) continue;
       
-      const interactedWith = tx.from.toLowerCase() === userAddress ? tx.to : tx.from;
-      const malicious = isMaliciousAddress(interactedWith, this.chain);
+      // Only check OUTBOUND transactions (user initiated)
+      if (tx.from.toLowerCase() !== userAddress) continue;
       
-      if (malicious && !flaggedAddresses.has(interactedWith.toLowerCase())) {
-        flaggedAddresses.add(interactedWith.toLowerCase());
+      const destination = tx.to.toLowerCase();
+      
+      // Skip if destination is legitimate infrastructure
+      // WHY: OpenSea, Uniswap etc. interact with millions of wallets including compromised ones
+      if (isLegitimateContract(destination)) continue;
+      
+      const malicious = isMaliciousAddress(destination, this.chain);
+      
+      if (malicious && !flaggedAddresses.has(destination)) {
+        flaggedAddresses.add(destination);
+        
+        // User SENT to malicious = they are a VICTIM
         threats.push({
-          id: `malicious-tx-${tx.hash}`,
+          id: `victim-sent-to-drainer-${tx.hash}`,
           type: malicious.type || 'WALLET_DRAINER',
-          severity: 'CRITICAL',
-          title: `Interaction with ${malicious.name || 'Known Malicious Contract'}`,
-          description: `This wallet interacted with "${malicious.name || 'a known malicious contract'}". This is a confirmed threat.`,
-          technicalDetails: `Contract: ${interactedWith}, TX: ${tx.hash}`,
+          severity: 'HIGH',
+          title: `⚠️ You Interacted with ${malicious.name || 'Known Malicious Contract'}`,
+          description: `You sent a transaction to "${malicious.name || 'a known malicious contract'}". You may have been phished. Check if any assets were drained.`,
+          technicalDetails: `Drainer Contract: ${destination}\nTransaction: ${tx.hash}\nYour Role: VICTIM (you sent to the scam)`,
           detectedAt: new Date().toISOString(),
-          relatedAddresses: [interactedWith],
+          relatedAddresses: [destination],
           relatedTransactions: [tx.hash],
-          ongoingRisk: true,
+          ongoingRisk: false, // Ongoing risk depends on approvals
         });
       }
     }
 
-    // Check token transfers
+    // ============================================
+    // CASE 2: User SENT tokens TO a known malicious address
+    // ============================================
+    // Same as above - user is the VICTIM
+    
     for (const transfer of tokenTransfers) {
       if (!transfer?.to || !transfer?.from || !transfer?.hash) continue;
       
+      // Only check OUTBOUND transfers
+      if (transfer.from.toLowerCase() !== userAddress) continue;
+      
       const destination = transfer.to.toLowerCase();
       if (flaggedAddresses.has(destination)) continue;
+      if (isLegitimateContract(destination)) continue;
       
-      if (transfer.from.toLowerCase() === userAddress) {
-        const isMalicious = isMaliciousAddress(destination, this.chain) || isDrainerRecipient(destination);
-        if (isMalicious) {
-          flaggedAddresses.add(destination);
-          threats.push({
-            id: `malicious-transfer-${transfer.hash}`,
-            type: 'WALLET_DRAINER',
-            severity: 'CRITICAL',
-            title: 'Tokens Sent to Known Malicious Address',
-            description: `${transfer.tokenSymbol} tokens were sent to a known drainer address.`,
-            technicalDetails: `Destination: ${destination}, Token: ${transfer.tokenSymbol}`,
-            detectedAt: new Date().toISOString(),
-            relatedAddresses: [destination],
-            relatedTransactions: [transfer.hash],
-            ongoingRisk: true,
-          });
-        }
+      const isMaliciousDest = isMaliciousAddress(destination, this.chain) || isDrainerRecipient(destination);
+      if (isMaliciousDest) {
+        flaggedAddresses.add(destination);
+        threats.push({
+          id: `victim-token-sent-${transfer.hash}`,
+          type: 'WALLET_DRAINER',
+          severity: 'HIGH',
+          title: 'Tokens Sent to Known Malicious Address',
+          description: `${transfer.tokenSymbol} tokens were sent to a known drainer address. You may have been phished.`,
+          technicalDetails: `Destination: ${destination}\nToken: ${transfer.tokenSymbol}\nYour Role: VICTIM`,
+          detectedAt: new Date().toISOString(),
+          relatedAddresses: [destination],
+          relatedTransactions: [transfer.hash],
+          ongoingRisk: false,
+        });
       }
     }
 
+    // ============================================
+    // CASE 3: User RECEIVED from a malicious address
+    // ============================================
+    // This is DIFFERENT - receiving funds is NOT malicious behavior!
+    // Reasons someone might receive from a malicious address:
+    // - Refund from a scam they interacted with
+    // - Payment from a service (the payer could be compromised)
+    // - Airdrop (dust attack - common but not user's fault)
+    //
+    // We add LOW severity INFO, not a threat
+    // WHY: A legitimate service fee receiver gets paid by MANY wallets.
+    //      If one of those wallets was compromised, it doesn't make the receiver malicious.
+    
+    let inboundFromMaliciousCount = 0;
+    
+    for (const tx of transactions) {
+      if (!tx?.to || !tx?.from || !tx?.hash) continue;
+      
+      // Check INBOUND transactions
+      if (tx.to.toLowerCase() !== userAddress) continue;
+      
+      const sender = tx.from.toLowerCase();
+      if (isLegitimateContract(sender)) continue;
+      
+      const malicious = isMaliciousAddress(sender, this.chain) || isDrainerRecipient(sender);
+      if (malicious) {
+        inboundFromMaliciousCount++;
+      }
+    }
+
+    // Only add a LOW severity note if there were inbound txs from malicious addresses
+    // This is NOT a threat - just informational
+    if (inboundFromMaliciousCount > 0 && inboundFromMaliciousCount <= 3) {
+      // Don't add as threat - just note for context
+      console.log(`[INFO] Wallet received ${inboundFromMaliciousCount} tx(s) from flagged addresses - NOT flagging as malicious`);
+    }
+
+    // ============================================
+    // CASE 4: Pattern detection for ATTACKER behavior
+    // ============================================
+    // Only flag as attacker if there's evidence of malicious INITIATION:
+    // - Wallet called approve() on behalf of victim
+    // - Wallet used transferFrom() to drain assets
+    // - Wallet deployed known drainer bytecode
+    //
+    // Note: This pattern is rare for end-user wallets. Usually, attackers use
+    // fresh addresses. This check is here for completeness.
+    
+    // Check for transferFrom calls where this wallet was the initiator (potential drainer)
+    const transferFromCalls = transactions.filter(tx => {
+      if (tx.from.toLowerCase() !== userAddress) return false;
+      // transferFrom selector: 0x23b872dd
+      return tx.methodId?.startsWith('0x23b872dd');
+    });
+
+    // If wallet called transferFrom more than 10 times to pull tokens from OTHER wallets,
+    // this is suspicious and worth flagging (potential drainer behavior)
+    if (transferFromCalls.length >= 10) {
+      // This is actual drainer behavior - wallet is INITIATING drains
+      threats.push({
+        id: `potential-drainer-behavior-${Date.now()}`,
+        type: 'WALLET_DRAINER',
+        severity: 'CRITICAL',
+        title: '⚠️ Potential Drainer Behavior Detected',
+        description: `This wallet initiated ${transferFromCalls.length} transferFrom calls, which is a pattern consistent with drainer contracts pulling tokens from victims.`,
+        technicalDetails: `TransferFrom calls: ${transferFromCalls.length}\nThis wallet may be operating as a drainer.`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: [],
+        relatedTransactions: transferFromCalls.slice(0, 5).map(tx => tx.hash),
+        ongoingRisk: true,
+      });
+    }
+
     return threats;
+  }
+
+  // ============================================
+  // DIRECTIONAL ANALYSIS
+  // ============================================
+  // Analyzes the flow direction to determine wallet's role
+  
+  private analyzeTransactionDirection(
+    transactions: TransactionData[],
+    tokenTransfers: TokenTransfer[],
+    userAddress: string
+  ): DirectionalAnalysis {
+    let sentToMaliciousCount = 0;
+    let sentToMaliciousValue = BigInt(0);
+    let receivedFromMaliciousCount = 0;
+    let receivedFromMaliciousValue = BigInt(0);
+    const maliciousFunctionsCalled: string[] = [];
+    const maliciousApprovals: string[] = [];
+    const drainerAddresses: string[] = [];
+    
+    // Analyze transactions
+    for (const tx of transactions) {
+      if (!tx?.from || !tx?.to) continue;
+      
+      const isOutbound = tx.from.toLowerCase() === userAddress;
+      const isInbound = tx.to.toLowerCase() === userAddress;
+      const counterparty = isOutbound ? tx.to.toLowerCase() : tx.from.toLowerCase();
+      
+      const isMaliciousCounterparty = isMaliciousAddress(counterparty, this.chain) || isDrainerRecipient(counterparty);
+      
+      if (isMaliciousCounterparty) {
+        if (isOutbound) {
+          sentToMaliciousCount++;
+          sentToMaliciousValue += BigInt(tx.value || '0');
+          
+          // Check if it was an approve call
+          if (tx.methodId?.startsWith('0x095ea7b3') || tx.methodId?.startsWith('0xa22cb465')) {
+            maliciousApprovals.push(counterparty);
+          }
+        }
+        if (isInbound) {
+          receivedFromMaliciousCount++;
+          receivedFromMaliciousValue += BigInt(tx.value || '0');
+        }
+      }
+    }
+    
+    // Check for transferFrom drains (someone else initiated transfer FROM this wallet)
+    for (const transfer of tokenTransfers) {
+      if (!transfer?.from || !transfer?.to) continue;
+      
+      // If tokens left this wallet but the wallet didn't initiate the tx
+      if (transfer.from.toLowerCase() === userAddress) {
+        const destination = transfer.to.toLowerCase();
+        const isMaliciousDest = isMaliciousAddress(destination, this.chain) || isDrainerRecipient(destination);
+        if (isMaliciousDest && !drainerAddresses.includes(destination)) {
+          drainerAddresses.push(destination);
+        }
+      }
+    }
+    
+    // Determine wallet role based on evidence
+    let walletRole: WalletRole = 'UNKNOWN';
+    let roleConfidence: 'HIGH' | 'MEDIUM' | 'LOW' = 'LOW';
+    
+    // Check if this is an infrastructure contract
+    if (isLegitimateContract(userAddress)) {
+      walletRole = 'INFRASTRUCTURE';
+      roleConfidence = 'HIGH';
+    }
+    // Check if wallet was drained (victim)
+    else if (drainerAddresses.length > 0 || (sentToMaliciousCount > 0 && maliciousApprovals.length > 0)) {
+      walletRole = 'VICTIM';
+      roleConfidence = sentToMaliciousCount >= 2 ? 'HIGH' : 'MEDIUM';
+    }
+    // Check if wallet only received from malicious (indirect exposure, NOT malicious)
+    else if (receivedFromMaliciousCount > 0 && sentToMaliciousCount === 0) {
+      walletRole = 'SERVICE_RECEIVER'; // Could be legitimate fee receiver
+      roleConfidence = 'MEDIUM';
+    }
+    // Mixed interactions
+    else if (sentToMaliciousCount > 0) {
+      walletRole = 'VICTIM'; // Sent to scam = victim
+      roleConfidence = 'MEDIUM';
+    }
+    
+    return {
+      sentToMalicious: sentToMaliciousCount > 0,
+      sentToMaliciousCount,
+      sentToMaliciousValue: sentToMaliciousValue.toString(),
+      receivedFromMalicious: receivedFromMaliciousCount > 0,
+      receivedFromMaliciousCount,
+      receivedFromMaliciousValue: receivedFromMaliciousValue.toString(),
+      calledMaliciousFunction: maliciousFunctionsCalled.length > 0,
+      maliciousFunctionsCalled,
+      approvedMaliciousSpender: maliciousApprovals.length > 0,
+      maliciousApprovals,
+      drainedViaTransferFrom: drainerAddresses.length > 0,
+      drainerAddresses,
+      walletRole,
+      roleConfidence,
+    };
   }
 
   // ============================================
@@ -966,41 +1190,159 @@ export class EVMAnalyzer {
   }
 
   // ============================================
-  // SCORING & STATUS
+  // WEIGHTED RISK SCORING
   // ============================================
+  // 
+  // CRITICAL FALSE POSITIVE PREVENTION:
+  // - Indirect exposure (interacting with same contracts as compromised wallets) = LOW score
+  // - Receiving funds from compromised wallets = MINIMAL score (not malicious behavior)
+  // - Only ACTIVE malicious behavior scores HIGH
+  //
+  // Scoring weights:
+  // - Direct malicious call: +40
+  // - Sent TO drainer: +35 (victim behavior, needs warning)
+  // - Approval to malicious: +30
+  // - Drained via transferFrom: +30 (victim)
+  // - Received FROM drainer: +5 (NOT malicious - could be refund/airdrop/payment)
+  // - Used legitimate DEX: -5 (normal behavior)
+  // - Infrastructure contract: 0 (auto-safe)
 
   private calculateRiskScore(threats: DetectedThreat[], approvals: TokenApproval[]): number {
-    let score = 0;
+    const breakdown = this.calculateRiskBreakdown(threats, approvals);
+    return breakdown.totalScore;
+  }
 
-    for (const threat of threats) {
-      switch (threat.severity) {
-        case 'CRITICAL': score += threat.ongoingRisk ? 40 : 25; break;
-        case 'HIGH': score += threat.ongoingRisk ? 25 : 15; break;
-        case 'MEDIUM': score += 10; break;
-        case 'LOW': score += 5; break;
+  private calculateRiskBreakdown(threats: DetectedThreat[], approvals: TokenApproval[]): RiskScoreBreakdown {
+    const factors: RiskFactor[] = [];
+    let threatScore = 0;
+    let behaviorScore = 0;
+    let approvalScore = 0;
+    let exposureScore = 0;
+
+    // Safe array guards
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    const safeApprovals = Array.isArray(approvals) ? approvals.filter(a => a != null) : [];
+
+    // ============================================
+    // THREAT SCORING (based on severity and type)
+    // ============================================
+    for (const threat of safeThreats) {
+      let weight = 0;
+      let factorType: RiskFactorType = 'INDIRECT_CONTACT';
+
+      // Private key compromise is the most severe
+      if (threat.type === 'PRIVATE_KEY_LEAK') {
+        weight = 50;
+        factorType = 'TIME_CLUSTERED_DRAIN';
+        factors.push({
+          id: `threat-${threat.id}`,
+          type: factorType,
+          weight,
+          description: threat.title,
+          evidence: threat.relatedTransactions,
+        });
+      }
+      // Drainer interaction (user is victim)
+      else if (threat.type === 'WALLET_DRAINER') {
+        // Check if this is victim behavior vs attacker behavior
+        if (threat.title.includes('Potential Drainer Behavior')) {
+          weight = 45; // This wallet IS a drainer
+          factorType = 'TRANSFERFROM_INITIATED';
+        } else {
+          weight = threat.ongoingRisk ? 30 : 20; // User is victim
+          factorType = 'SENT_TO_DRAINER';
+        }
+        factors.push({
+          id: `threat-${threat.id}`,
+          type: factorType,
+          weight,
+          description: threat.title,
+          evidence: threat.relatedTransactions,
+        });
+      }
+      // Approval issues
+      else if (threat.type === 'APPROVAL_HIJACK') {
+        weight = threat.ongoingRisk ? 35 : 20;
+        factorType = 'APPROVAL_TO_MALICIOUS';
+        factors.push({
+          id: `threat-${threat.id}`,
+          type: factorType,
+          weight,
+          description: threat.title,
+          evidence: threat.relatedAddresses,
+        });
+      }
+      // Other threats
+      else {
+        switch (threat.severity) {
+          case 'CRITICAL': weight = threat.ongoingRisk ? 25 : 15; break;
+          case 'HIGH': weight = threat.ongoingRisk ? 15 : 10; break;
+          case 'MEDIUM': weight = 8; break;
+          case 'LOW': weight = 3; break;
+        }
+      }
+
+      threatScore += weight;
+    }
+
+    // ============================================
+    // APPROVAL SCORING
+    // ============================================
+    for (const approval of safeApprovals) {
+      if (approval.isMalicious) {
+        approvalScore += 25;
+        factors.push({
+          id: `approval-${approval.id}`,
+          type: 'APPROVAL_TO_MALICIOUS',
+          weight: 25,
+          description: `Active approval to malicious address: ${approval.spender.slice(0, 10)}...`,
+        });
+      } else if (approval.riskLevel === 'CRITICAL') {
+        approvalScore += 15;
+      } else if (approval.riskLevel === 'HIGH') {
+        approvalScore += 8;
       }
     }
 
-    for (const approval of approvals) {
-      if (approval.isMalicious) score += 30;
-      else if (approval.riskLevel === 'CRITICAL') score += 20;
-      else if (approval.riskLevel === 'HIGH') score += 10;
-    }
+    // ============================================
+    // CALCULATE TOTAL
+    // ============================================
+    const totalScore = Math.min(100, Math.max(0, threatScore + behaviorScore + approvalScore + exposureScore));
 
-    return Math.min(100, score);
+    return {
+      threatScore,
+      behaviorScore,
+      approvalScore,
+      exposureScore,
+      totalScore,
+      factors,
+    };
   }
 
   private determineSecurityStatus(riskScore: number, threats: DetectedThreat[]): 'SAFE' | 'AT_RISK' | 'COMPROMISED' {
-    const hasCritical = threats.some(t => t.severity === 'CRITICAL' && t.ongoingRisk);
-    const hasKeyCompromise = threats.some(t => t.type === 'PRIVATE_KEY_LEAK');
-    const hasDrainer = threats.some(t => t.type === 'WALLET_DRAINER');
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    
+    // Check for definitive compromise indicators
+    const hasKeyCompromise = safeThreats.some(t => t?.type === 'PRIVATE_KEY_LEAK');
+    const hasActiveDrainerBehavior = safeThreats.some(t => 
+      t?.type === 'WALLET_DRAINER' && t?.title?.includes('Potential Drainer Behavior')
+    );
+    const hasCriticalOngoing = safeThreats.some(t => t?.severity === 'CRITICAL' && t?.ongoingRisk);
 
-    if (hasCritical || hasKeyCompromise || hasDrainer || riskScore >= 50) {
+    // Definitive compromise: key leak, active drainer behavior, or critical ongoing threat
+    if (hasKeyCompromise || hasActiveDrainerBehavior || (hasCriticalOngoing && riskScore >= 50)) {
       return 'COMPROMISED';
     }
-    if (riskScore >= 20 || threats.length > 0) {
+    
+    // At risk: victim of drainer, has risky approvals, or moderate score
+    const isVictimOfDrainer = safeThreats.some(t => 
+      t?.type === 'WALLET_DRAINER' && !t?.title?.includes('Potential Drainer Behavior')
+    );
+    
+    if (isVictimOfDrainer || riskScore >= 25 || safeThreats.length > 0) {
       return 'AT_RISK';
     }
+    
     return 'SAFE';
   }
 

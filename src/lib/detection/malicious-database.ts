@@ -502,69 +502,179 @@ export function getAttackTypeFromPattern(patternId: string): AttackType {
 // ============================================
 // KNOWN LEGITIMATE CONTRACTS (Whitelist)
 // ============================================
-// Don't flag these as suspicious - these are major DeFi protocols
+// CRITICAL FOR FALSE POSITIVE PREVENTION:
+// These are high-volume infrastructure contracts that interact with millions of wallets.
+// They must NEVER be flagged as malicious just because compromised wallets used them.
+// Detection must be based on BEHAVIOR, not association.
 
 export const KNOWN_LEGITIMATE_CONTRACTS: Record<string, string> = {
-  // Uniswap
+  // ============================================
+  // UNISWAP ECOSYSTEM
+  // ============================================
   '0x7a250d5630b4cf539739df2c5dacb4c659f2488d': 'Uniswap V2 Router',
   '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45': 'Uniswap V3 Router',
   '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b': 'Uniswap Universal Router',
   '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad': 'Uniswap Universal Router V2',
   '0x000000000022d473030f116ddee9f6b43ac78ba3': 'Uniswap Permit2',
   '0xe592427a0aece92de3edee1f18e0157c05861564': 'Uniswap V3 SwapRouter',
+  '0x1f98431c8ad98523631ae4a59f267346ea31f984': 'Uniswap V3 Factory',
+  '0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f': 'Uniswap V2 Factory',
   
-  // OpenSea / Seaport
+  // ============================================
+  // OPENSEA / SEAPORT (NFT MARKETPLACE)
+  // ============================================
+  // NOTE: These receive funds from MANY wallets including compromised ones.
+  // Receiving from compromised wallet ≠ being malicious.
   '0x00000000000000adc04c56bf30ac9d3c0aaf14dc': 'OpenSea Seaport 1.1',
   '0x00000000006c3852cbef3e08e8df289169ede581': 'OpenSea Seaport 1.4',
   '0x0000000000000068f116a894984e2db1123eb395': 'OpenSea Seaport 1.5',
   '0x00000000000001ad428e4906ae43d8f9852d0dd6': 'Seaport 1.6',
+  '0x1e0049783f008a0085193e00003d00cd54003c71': 'OpenSea Fee Collector',
   
-  // 0x Protocol
+  // ============================================
+  // 0x PROTOCOL
+  // ============================================
   '0xdef1c0ded9bec7f1a1670819833240f027b25eff': '0x Exchange Proxy',
   '0xdef171fe48cf0115b1d80b88dc8eab59176fee57': '0x Exchange Proxy (Polygon)',
   
-  // 1inch
+  // ============================================
+  // 1INCH AGGREGATOR
+  // ============================================
   '0x1111111254eeb25477b68fb85ed929f73a960582': '1inch V5 Router',
   '0x111111125421ca6dc452d289314280a0f8842a65': '1inch V6 Router',
   '0x1111111254fb6c44bac0bed2854e76f90643097d': '1inch V4 Router',
+  '0x11111112542d85b3ef69ae05771c2dccff4faa26': '1inch V3 Router',
   
-  // Blur
+  // ============================================
+  // BLUR NFT MARKETPLACE
+  // ============================================
   '0x000000000000ad05ccc4f10045630fb830b95127': 'Blur Marketplace',
   '0x29469395eaf6f95920e59f858042f0e28d98a20b': 'Blur Blend',
   '0x0000000000a39bb272e79075ade125fd351887ac': 'Blur Pool',
+  '0xb2ecfe4e4d61f8790bbb9de2d1259b9e2410cea5': 'Blur Exchange',
   
-  // PancakeSwap
+  // ============================================
+  // PANCAKESWAP (BSC)
+  // ============================================
   '0x10ed43c718714eb63d5aa57b78b54704e256024e': 'PancakeSwap Router V2',
   '0x13f4ea83d0bd40e75c8222255bc855a974568dd4': 'PancakeSwap Router V3',
+  '0x556b9306565093c855aea9ae92a594704c2cd59e': 'PancakeSwap MasterChef',
   
-  // SushiSwap
+  // ============================================
+  // SUSHISWAP
+  // ============================================
   '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f': 'SushiSwap Router',
+  '0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac': 'SushiSwap Factory',
   
-  // Aave
+  // ============================================
+  // AAVE LENDING
+  // ============================================
   '0x7d2768de32b0b80b7a3454c06bdac94a69ddc7a9': 'Aave V2 Lending Pool',
   '0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2': 'Aave V3 Pool',
+  '0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9': 'Aave Token',
   
-  // Compound
+  // ============================================
+  // COMPOUND
+  // ============================================
   '0x3d9819210a31b4961b30ef54be2aed79b9c9cd3b': 'Compound Comptroller',
+  '0xc00e94cb662c3520282e6f5717214004a7f26888': 'COMP Token',
   
-  // Curve
+  // ============================================
+  // CURVE FINANCE
+  // ============================================
   '0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7': 'Curve 3pool',
+  '0xd51a44d3fae010294c616388b506acda1bfaae46': 'Curve Tricrypto2',
+  '0xdc24316b9ae028f1497c275eb9192a3ea0f67022': 'Curve stETH Pool',
   
-  // Lido
+  // ============================================
+  // LIDO STAKING
+  // ============================================
   '0xae7ab96520de3a18e5e111b5eaab095312d7fe84': 'Lido stETH',
+  '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0': 'Lido wstETH',
   
+  // ============================================
   // ENS
+  // ============================================
   '0x283af0b28c62c092c9727f1ee09c02ca627eb7f5': 'ENS Registrar',
   '0x57f1887a8bf19b14fc0df6fd9b2acc9af147ea85': 'ENS Base Registrar',
+  '0x00000000000c2e074ec69a0dfb2997ba6c7d2e1e': 'ENS Registry',
   
-  // WETH
+  // ============================================
+  // BRIDGES
+  // ============================================
+  '0x3ee18b2214aff97000d974cf647e7c347e8fa585': 'Wormhole Token Bridge',
+  '0x99c9fc46f92e8a1c0dec1b1747d010903e884be1': 'Optimism Gateway',
+  '0x4dbd4fc535ac27206064b68ffcf827b0a60bab3f': 'Arbitrum Inbox',
+  '0x8315177ab297ba92a06054ce80a67ed4dbd7ed3a': 'Arbitrum Bridge',
+  
+  // ============================================
+  // WRAPPED NATIVE TOKENS
+  // ============================================
   '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 'WETH',
+  '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c': 'WBNB',
+  '0x4200000000000000000000000000000000000006': 'WETH (Base)',
   
-  // Common token contracts
+  // ============================================
+  // MAJOR STABLECOINS
+  // ============================================
   '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC',
   '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT',
   '0x6b175474e89094c44da98b954eedeac495271d0f': 'DAI',
+  '0x4fabb145d64652a948d72533023f6e7a623c7c53': 'BUSD',
+  
+  // ============================================
+  // COINBASE
+  // ============================================
+  '0xa9d1e08c7793af67e9d92fe308d5697fb81d3e43': 'Coinbase Commerce',
+  
+  // ============================================
+  // GNOSIS SAFE / MULTISIG
+  // ============================================
+  '0xd9db270c1b5e3bd161e8c8503c55ceabee709552': 'Gnosis Safe Singleton',
+  '0xa6b71e26c5e0845f74c812102ca7114b6a896ab2': 'Gnosis Safe Proxy Factory',
+  
+  // ============================================
+  // OTHER MAJOR PROTOCOLS
+  // ============================================
+  '0x00000000009726632680fb29d3f7a9734e3010e2': 'Rainbow Router',
+  '0x6131b5fae19ea4f9d964eac0408e4408b66337b5': 'KyberSwap Router',
+  '0x881d40237659c251811cec9c364ef91dc08d300c': 'Metamask Swap Router',
 };
+
+// ============================================
+// INFRASTRUCTURE CATEGORY CLASSIFICATION
+// ============================================
+// Used to determine if an address is infrastructure (neutral) vs end-user wallet
+
+export type InfrastructureCategory = 
+  | 'DEX'           // Decentralized exchange
+  | 'NFT_MARKET'    // NFT marketplace
+  | 'LENDING'       // Lending protocol
+  | 'BRIDGE'        // Cross-chain bridge
+  | 'STAKING'       // Staking protocol
+  | 'TOKEN'         // Token contract
+  | 'AGGREGATOR'    // Swap aggregator
+  | 'MULTISIG'      // Multisig wallet
+  | 'OTHER';
+
+export function getInfrastructureCategory(address: string): InfrastructureCategory | null {
+  const normalized = address.toLowerCase();
+  const label = KNOWN_LEGITIMATE_CONTRACTS[normalized];
+  
+  if (!label) return null;
+  
+  // Categorize based on label keywords
+  if (label.includes('Router') || label.includes('Swap') || label.includes('Exchange')) return 'DEX';
+  if (label.includes('Seaport') || label.includes('OpenSea') || label.includes('Blur') || label.includes('Marketplace')) return 'NFT_MARKET';
+  if (label.includes('Lending') || label.includes('Pool') || label.includes('Aave') || label.includes('Compound')) return 'LENDING';
+  if (label.includes('Bridge') || label.includes('Gateway') || label.includes('Wormhole')) return 'BRIDGE';
+  if (label.includes('stETH') || label.includes('Staking') || label.includes('Lido')) return 'STAKING';
+  if (label.includes('USDC') || label.includes('USDT') || label.includes('DAI') || label.includes('Token') || label.includes('WETH')) return 'TOKEN';
+  if (label.includes('1inch') || label.includes('Aggregator')) return 'AGGREGATOR';
+  if (label.includes('Safe') || label.includes('Multisig')) return 'MULTISIG';
+  
+  return 'OTHER';
+}
 
 export function isLegitimateContract(address: string): string | null {
   const normalizedAddress = address.toLowerCase();

@@ -1,6 +1,8 @@
 // ============================================
-// WALLET SENTINEL - TYPE DEFINITIONS
+// SECURNEX - TYPE DEFINITIONS
 // ============================================
+// Security analysis types with behavioral risk scoring
+// Prevents false positives through directional analysis
 
 // Supported blockchain networks
 export type Chain = 'ethereum' | 'base' | 'bnb' | 'solana';
@@ -22,6 +24,101 @@ export type AttackType =
 
 // Risk severity levels
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+// ============================================
+// WALLET ROLE CLASSIFICATION
+// ============================================
+// Critical for preventing false positives:
+// - A wallet that RECEIVES from compromised wallets is NOT automatically malicious
+// - Must analyze BEHAVIOR and DIRECTION of fund flow
+
+export type WalletRole = 
+  | 'VICTIM'              // Lost funds to drainer/attacker
+  | 'ATTACKER'            // Initiated malicious transactions, received stolen funds
+  | 'INFRASTRUCTURE'      // DEX, bridge, router - neutral intermediary
+  | 'SERVICE_RECEIVER'    // Receives fees/payments from many sources (NOT malicious)
+  | 'INDIRECT_EXPOSURE'   // Had contact with compromised wallet but no malicious behavior
+  | 'UNKNOWN';            // Insufficient data to classify
+
+// ============================================
+// WEIGHTED RISK SCORING
+// ============================================
+// Replaces boolean isDrainer with nuanced scoring
+// Indirect exposure should NOT trigger alerts
+
+export interface RiskScoreBreakdown {
+  // Base score from detected threats (0-100)
+  threatScore: number;
+  
+  // Behavioral indicators (-20 to +40)
+  behaviorScore: number;
+  
+  // Approval risk score (0-30)
+  approvalScore: number;
+  
+  // Exposure penalty - minimal for indirect contact (0-10)
+  exposureScore: number;
+  
+  // Final weighted score (0-100)
+  totalScore: number;
+  
+  // Factors that contributed to the score
+  factors: RiskFactor[];
+}
+
+export interface RiskFactor {
+  id: string;
+  type: RiskFactorType;
+  weight: number;  // Positive = increases risk, Negative = decreases risk
+  description: string;
+  evidence?: string[];
+}
+
+export type RiskFactorType =
+  | 'DIRECT_MALICIOUS_CALL'      // Wallet called a malicious function (HIGH weight)
+  | 'RECEIVED_FROM_DRAINER'      // Received funds from drainer (MEDIUM weight - could be refund)
+  | 'SENT_TO_DRAINER'            // Sent funds to drainer (HIGH weight)
+  | 'APPROVAL_TO_MALICIOUS'      // Approved malicious spender (CRITICAL weight)
+  | 'TRANSFERFROM_INITIATED'     // Used transferFrom to drain (CRITICAL weight)
+  | 'INDIRECT_CONTACT'           // Interacted with wallet that was compromised (LOW weight)
+  | 'HIGH_VOLUME_RECEIVER'       // Receives from many wallets (NEUTRAL - likely service)
+  | 'INFRASTRUCTURE_USAGE'       // Used known DEX/bridge (NEGATIVE - reduces suspicion)
+  | 'NORMAL_TRADING_PATTERN'     // Regular buy/sell pattern (NEGATIVE - reduces suspicion)
+  | 'TIME_CLUSTERED_DRAIN'       // Multiple assets drained in short window (CRITICAL)
+  | 'SWEEPER_PATTERN'            // Funds swept immediately after deposit (CRITICAL);
+
+// ============================================
+// TRANSACTION DIRECTION ANALYSIS
+// ============================================
+// Essential for distinguishing victim from attacker
+
+export interface DirectionalAnalysis {
+  // Did this wallet SEND assets to a malicious address?
+  sentToMalicious: boolean;
+  sentToMaliciousCount: number;
+  sentToMaliciousValue: string;
+  
+  // Did this wallet RECEIVE assets from a malicious address?
+  receivedFromMalicious: boolean;
+  receivedFromMaliciousCount: number;
+  receivedFromMaliciousValue: string;
+  
+  // Did this wallet CALL malicious contract functions?
+  calledMaliciousFunction: boolean;
+  maliciousFunctionsCalled: string[];
+  
+  // Did this wallet APPROVE a malicious spender?
+  approvedMaliciousSpender: boolean;
+  maliciousApprovals: string[];
+  
+  // Was this wallet DRAINED via transferFrom by another party?
+  drainedViaTransferFrom: boolean;
+  drainerAddresses: string[];
+  
+  // Conclusion
+  walletRole: WalletRole;
+  roleConfidence: 'HIGH' | 'MEDIUM' | 'LOW';
+}
 
 // Token standards
 export type TokenStandard = 'ERC20' | 'ERC721' | 'ERC1155' | 'SPL' | 'NATIVE';
