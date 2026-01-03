@@ -207,20 +207,49 @@ export class EVMAnalyzer {
     // CALCULATE RESULTS
     // ============================================
 
+    // ============================================
+    // PERFORM DIRECTIONAL ANALYSIS FOR CLASSIFICATION
+    // ============================================
+    // This is CRITICAL for preventing false positives.
+    // A wallet is NOT malicious just because it received from compromised wallets.
+    
+    const directionalAnalysis = this.analyzeTransactionDirection(transactions, tokenTransfers, normalizedAddress);
+    
+    // Build classification based on behavioral analysis
+    const classification = this.buildWalletClassification(
+      directionalAnalysis,
+      threats,
+      normalizedAddress,
+      transactions
+    );
+    
     const riskScore = this.calculateRiskScore(threats, analyzedApprovals);
+    const riskLevel = this.determineRiskLevel(riskScore, threats);
     const securityStatus = this.determineSecurityStatus(riskScore, threats);
     const suspiciousTransactions = this.buildSuspiciousTransactions(transactions, threats);
     const recommendations = this.generateRecommendations(threats, analyzedApprovals, securityStatus);
     const recoveryPlan = securityStatus !== 'SAFE' ? this.generateRecoveryPlan(threats, analyzedApprovals) : undefined;
+    
+    // Generate human-readable classification reason
+    const classificationReason = this.generateClassificationReason(classification, directionalAnalysis);
 
-    console.log(`[ANALYZE] Completed. Status: ${securityStatus}, Score: ${riskScore}, Threats: ${threats.length}`);
+    console.log(`[ANALYZE] Completed. Status: ${securityStatus}, Role: ${classification.role}, Score: ${riskScore}, Threats: ${threats.length}`);
 
     return {
       address: normalizedAddress,
       chain: this.chain,
       timestamp: new Date().toISOString(),
+      
+      // Core security assessment
       securityStatus,
       riskScore,
+      
+      // Classification (prevents false positives)
+      classification,
+      riskLevel,
+      classificationReason,
+      
+      // Detailed analysis
       summary: this.generateSummary(securityStatus, threats, analyzedApprovals),
       detectedThreats: threats,
       approvals: analyzedApprovals,
@@ -228,6 +257,9 @@ export class EVMAnalyzer {
       recommendations,
       recoveryPlan,
       educationalContent: this.generateEducationalContent(threats),
+      
+      // Directional analysis for transparency
+      directionalAnalysis,
     };
   }
 
@@ -1014,6 +1046,287 @@ export class EVMAnalyzer {
       walletRole,
       roleConfidence,
     };
+  }
+
+  // ============================================
+  // WALLET CLASSIFICATION (Critical for False Positive Prevention)
+  // ============================================
+  // 
+  // RULE 1: Receiving funds from compromised wallets ≠ being malicious
+  // RULE 2: Interacting with same contracts as victims ≠ guilt
+  // RULE 3: High-volume receivers (service fees) are neutral
+  // RULE 4: Only ACTIVE malicious behavior = malicious classification
+  
+  private buildWalletClassification(
+    directionalAnalysis: DirectionalAnalysis,
+    threats: DetectedThreat[],
+    userAddress: string,
+    transactions: TransactionData[]
+  ): import('@/types').WalletClassification {
+    const evidence: import('@/types').ClassificationEvidence[] = [];
+    
+    // Check if this is an infrastructure contract (OpenSea, Uniswap, etc.)
+    // WHY: These contracts interact with millions of wallets, including compromised ones.
+    //      They should NEVER be flagged as malicious due to association.
+    const isInfrastructure = isLegitimateContract(userAddress);
+    if (isInfrastructure) {
+      evidence.push({
+        type: 'INFRASTRUCTURE_USAGE',
+        description: `This is a known infrastructure contract: ${isInfrastructure}`,
+        weight: 'HIGH',
+      });
+      
+      return {
+        role: 'INFRASTRUCTURE',
+        confidence: 'HIGH',
+        evidence,
+        isMalicious: false,
+        isInfrastructure: true,
+        isServiceFeeReceiver: false,
+      };
+    }
+    
+    // Check for service fee receiver pattern
+    // WHY: A wallet that receives small amounts from many different wallets is likely
+    //      a legitimate service (20% fee receiver, treasury, etc.), NOT a drainer.
+    //      Even if some of those sending wallets were later compromised, this doesn't
+    //      make the receiver malicious.
+    const isServiceFeeReceiver = this.detectServiceFeePattern(transactions, userAddress);
+    if (isServiceFeeReceiver && !directionalAnalysis.sentToMalicious) {
+      evidence.push({
+        type: 'HIGH_VOLUME_RECEIVER',
+        description: 'Receives payments from many unique wallets without initiating drains',
+        weight: 'HIGH',
+      });
+      
+      // Additional check: Did this wallet initiate any malicious activity?
+      const initiatedDrains = threats.some(t => 
+        t.title?.includes('Drainer Behavior') || 
+        t.title?.includes('Drainer Contract')
+      );
+      
+      if (!initiatedDrains) {
+        return {
+          role: 'SERVICE_RECEIVER',
+          confidence: directionalAnalysis.receivedFromMaliciousCount > 5 ? 'HIGH' : 'MEDIUM',
+          evidence,
+          isMalicious: false,
+          isInfrastructure: false,
+          isServiceFeeReceiver: true,
+        };
+      }
+    }
+    
+    // Check for ATTACKER behavior (initiated drains)
+    // WHY: Only classify as attacker if there's evidence of ACTIVE malicious behavior:
+    //      - Called transferFrom to pull tokens from victims
+    //      - Deployed drainer contracts
+    //      - All drained funds went to this wallet
+    const hasDrainerBehavior = threats.some(t => 
+      t.title?.includes('Drainer Behavior') || 
+      t.title?.includes('Drainer Contract Detected')
+    );
+    
+    if (hasDrainerBehavior) {
+      evidence.push({
+        type: 'INITIATED_DRAIN',
+        description: 'This wallet initiated transferFrom calls consistent with drainer behavior',
+        weight: 'HIGH',
+        transactions: threats.filter(t => t.title?.includes('Drainer')).flatMap(t => t.relatedTransactions),
+      });
+      
+      return {
+        role: 'ATTACKER',
+        confidence: 'HIGH',
+        evidence,
+        isMalicious: true,
+        isInfrastructure: false,
+        isServiceFeeReceiver: false,
+      };
+    }
+    
+    // Check for VICTIM behavior (was drained or sent to malicious)
+    // WHY: Users who SENT to drainers or APPROVED malicious spenders are victims, not attackers.
+    if (directionalAnalysis.drainedViaTransferFrom || 
+        directionalAnalysis.sentToMalicious ||
+        directionalAnalysis.approvedMaliciousSpender) {
+      
+      if (directionalAnalysis.drainedViaTransferFrom) {
+        evidence.push({
+          type: 'OUTBOUND_TO_DRAINER',
+          description: 'Assets were drained from this wallet via transferFrom',
+          weight: 'HIGH',
+          addresses: directionalAnalysis.drainerAddresses,
+        });
+      }
+      
+      if (directionalAnalysis.approvedMaliciousSpender) {
+        evidence.push({
+          type: 'APPROVED_MALICIOUS',
+          description: 'Approved a malicious spender (victim of phishing)',
+          weight: 'HIGH',
+          addresses: directionalAnalysis.maliciousApprovals,
+        });
+      }
+      
+      return {
+        role: 'VICTIM',
+        confidence: directionalAnalysis.drainedViaTransferFrom ? 'HIGH' : 'MEDIUM',
+        evidence,
+        isMalicious: false,  // CRITICAL: Victims are NOT malicious
+        isInfrastructure: false,
+        isServiceFeeReceiver: false,
+      };
+    }
+    
+    // Check for INDIRECT EXPOSURE (only received from malicious, no other involvement)
+    // WHY: Receiving funds from a compromised wallet is NOT malicious behavior.
+    //      The sender could be:
+    //      - A refund from a service
+    //      - A payment from a customer (who happened to be compromised)
+    //      - An airdrop/dust attack
+    //      None of these make the receiver malicious.
+    if (directionalAnalysis.receivedFromMalicious && !directionalAnalysis.sentToMalicious) {
+      evidence.push({
+        type: 'INBOUND_FROM_DRAINER',
+        description: `Received ${directionalAnalysis.receivedFromMaliciousCount} transaction(s) from flagged addresses - NOT indicative of malicious behavior`,
+        weight: 'LOW',  // LOW weight because this is NOT malicious
+      });
+      
+      return {
+        role: 'INDIRECT_EXPOSURE',
+        confidence: 'MEDIUM',
+        evidence,
+        isMalicious: false,  // CRITICAL: Receiving funds ≠ malicious
+        isInfrastructure: false,
+        isServiceFeeReceiver: false,
+      };
+    }
+    
+    // No significant malicious indicators
+    if (threats.length === 0) {
+      evidence.push({
+        type: 'NORMAL_ACTIVITY',
+        description: 'No malicious activity detected',
+        weight: 'HIGH',
+      });
+      
+      return {
+        role: 'UNKNOWN',  // Unknown in this context means "normal user"
+        confidence: 'HIGH',
+        evidence,
+        isMalicious: false,
+        isInfrastructure: false,
+        isServiceFeeReceiver: false,
+      };
+    }
+    
+    // Default: Unknown role with whatever threats were detected
+    return {
+      role: 'UNKNOWN',
+      confidence: 'LOW',
+      evidence,
+      isMalicious: false,
+      isInfrastructure: false,
+      isServiceFeeReceiver: false,
+    };
+  }
+  
+  // ============================================
+  // SERVICE FEE RECEIVER DETECTION
+  // ============================================
+  // Detects wallets that receive fees from many unique senders.
+  // These are NOT malicious - they are legitimate service receivers.
+  
+  private detectServiceFeePattern(
+    transactions: TransactionData[],
+    userAddress: string
+  ): boolean {
+    // Count unique senders
+    const uniqueSenders = new Set<string>();
+    let totalReceived = 0;
+    
+    for (const tx of transactions) {
+      if (!tx?.to || !tx?.from) continue;
+      
+      // Only look at incoming transactions
+      if (tx.to.toLowerCase() !== userAddress) continue;
+      
+      uniqueSenders.add(tx.from.toLowerCase());
+      totalReceived++;
+    }
+    
+    // SERVICE FEE PATTERN:
+    // - Receives from 10+ unique addresses
+    // - More incoming than outgoing (receiver, not sender)
+    // - No signs of drainer behavior
+    //
+    // WHY: A drainer typically RECEIVES from victims via transferFrom (not direct send)
+    //      and then sends to consolidation wallets. A fee receiver gets direct payments
+    //      from many unique senders.
+    
+    const incomingRatio = totalReceived / Math.max(transactions.length, 1);
+    
+    return uniqueSenders.size >= 10 && incomingRatio >= 0.3;
+  }
+  
+  // ============================================
+  // RISK LEVEL DETERMINATION
+  // ============================================
+  
+  private determineRiskLevel(riskScore: number, threats: DetectedThreat[]): RiskLevel {
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    
+    // Check for critical threats
+    const hasCritical = safeThreats.some(t => t?.severity === 'CRITICAL');
+    if (hasCritical || riskScore >= 75) return 'CRITICAL';
+    
+    // Check for high threats
+    const hasHigh = safeThreats.some(t => t?.severity === 'HIGH');
+    if (hasHigh || riskScore >= 50) return 'HIGH';
+    
+    // Check for medium threats
+    if (riskScore >= 25) return 'MEDIUM';
+    
+    return 'LOW';
+  }
+  
+  // ============================================
+  // CLASSIFICATION REASON (Human-readable)
+  // ============================================
+  
+  private generateClassificationReason(
+    classification: import('@/types').WalletClassification,
+    directionalAnalysis: DirectionalAnalysis
+  ): string {
+    switch (classification.role) {
+      case 'INFRASTRUCTURE':
+        return `This is a known infrastructure contract (${classification.evidence[0]?.description || 'DEX/Bridge/Router'}). It cannot be classified as malicious due to user interactions.`;
+        
+      case 'SERVICE_RECEIVER':
+        return `This wallet receives payments from many unique addresses without initiating any malicious activity. It is classified as a legitimate service fee receiver, not a drainer.`;
+        
+      case 'ATTACKER':
+        return `This wallet shows evidence of initiating drain attacks by calling transferFrom to pull tokens from victim wallets.`;
+        
+      case 'VICTIM':
+        if (directionalAnalysis.drainedViaTransferFrom) {
+          return `This wallet was drained via transferFrom by ${directionalAnalysis.drainerAddresses.length} malicious address(es). The owner is a victim, not an attacker.`;
+        }
+        if (directionalAnalysis.approvedMaliciousSpender) {
+          return `This wallet approved a malicious spender, likely due to phishing. The owner is a victim.`;
+        }
+        return `This wallet sent transactions to known malicious addresses, indicating the owner was likely scammed.`;
+        
+      case 'INDIRECT_EXPOSURE':
+        return `This wallet received ${directionalAnalysis.receivedFromMaliciousCount} transaction(s) from flagged addresses but showed no malicious behavior. Receiving funds is NOT evidence of wrongdoing.`;
+        
+      default:
+        if (classification.evidence.some(e => e.type === 'NORMAL_ACTIVITY')) {
+          return 'No malicious activity detected. This wallet appears to be operating normally.';
+        }
+        return 'Insufficient data to determine wallet role. No definitive malicious behavior detected.';
+    }
   }
 
   // ============================================

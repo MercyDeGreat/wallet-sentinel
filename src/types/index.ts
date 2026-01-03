@@ -139,8 +139,34 @@ export interface WalletAnalysisResult {
   address: string;
   chain: Chain;
   timestamp: string;
+  
+  // ============================================
+  // CORE SECURITY ASSESSMENT
+  // ============================================
+  
+  // Overall security status (SAFE, AT_RISK, COMPROMISED)
   securityStatus: SecurityStatus;
-  riskScore: number; // 0-100
+  
+  // Weighted risk score (0-100)
+  riskScore: number;
+  
+  // ============================================
+  // CLASSIFICATION (Prevents False Positives)
+  // ============================================
+  // Critical: A wallet is NOT malicious just because it received from compromised wallets
+  
+  // Wallet's determined role based on BEHAVIORAL analysis
+  classification: WalletClassification;
+  
+  // Risk level for display (separate from classification)
+  riskLevel: RiskLevel;
+  
+  // Human-readable explanation of why this classification was made
+  classificationReason: string;
+  
+  // ============================================
+  // DETAILED ANALYSIS
+  // ============================================
   summary: string;
   detectedThreats: DetectedThreat[];
   approvals: TokenApproval[];
@@ -148,6 +174,45 @@ export interface WalletAnalysisResult {
   recommendations: SecurityRecommendation[];
   recoveryPlan?: RecoveryPlan;
   educationalContent?: EducationalContent;
+  
+  // Directional analysis breakdown (for transparency)
+  directionalAnalysis?: DirectionalAnalysis;
+}
+
+// ============================================
+// WALLET CLASSIFICATION
+// ============================================
+// This is the final determination of wallet's role
+// CRITICAL: Receiving funds ≠ malicious behavior
+
+export interface WalletClassification {
+  // The wallet's role
+  role: WalletRole;
+  
+  // Confidence in this classification
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  
+  // Evidence supporting this classification
+  evidence: ClassificationEvidence[];
+  
+  // Was this wallet flagged as malicious? (Distinct from being a victim)
+  isMalicious: boolean;
+  
+  // Is this an infrastructure/service contract?
+  isInfrastructure: boolean;
+  
+  // Is this a service fee receiver?
+  isServiceFeeReceiver: boolean;
+}
+
+export interface ClassificationEvidence {
+  type: 'OUTBOUND_TO_DRAINER' | 'INBOUND_FROM_DRAINER' | 'INITIATED_DRAIN' | 
+        'APPROVED_MALICIOUS' | 'INFRASTRUCTURE_USAGE' | 'HIGH_VOLUME_RECEIVER' |
+        'NORMAL_ACTIVITY' | 'SWEEPER_PATTERN' | 'UNKNOWN';
+  description: string;
+  weight: 'HIGH' | 'MEDIUM' | 'LOW';
+  addresses?: string[];
+  transactions?: string[];
 }
 
 export interface DetectedThreat {

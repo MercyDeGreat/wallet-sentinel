@@ -3,7 +3,24 @@
 // ============================================
 // Use these mock responses to test the UI without making real API calls
 
-import { WalletAnalysisResult, Chain } from '@/types';
+import { WalletAnalysisResult, Chain, WalletClassification, RiskLevel } from '@/types';
+
+// Helper to create classification objects
+function createClassification(
+  role: 'UNKNOWN' | 'VICTIM' | 'ATTACKER' | 'INFRASTRUCTURE' | 'SERVICE_RECEIVER' | 'INDIRECT_EXPOSURE',
+  isMalicious: boolean = false
+): WalletClassification {
+  return {
+    role,
+    confidence: 'HIGH',
+    evidence: role === 'UNKNOWN' 
+      ? [{ type: 'NORMAL_ACTIVITY' as const, description: 'No malicious activity detected', weight: 'HIGH' as const }]
+      : [{ type: 'OUTBOUND_TO_DRAINER' as const, description: 'Detected threat', weight: 'HIGH' as const }],
+    isMalicious,
+    isInfrastructure: role === 'INFRASTRUCTURE',
+    isServiceFeeReceiver: role === 'SERVICE_RECEIVER',
+  };
+}
 
 /**
  * Generate a mock safe wallet analysis
@@ -13,8 +30,15 @@ export function getMockSafeAnalysis(address: string, chain: Chain): WalletAnalys
     address: address.toLowerCase(),
     chain,
     timestamp: new Date().toISOString(),
+    
+    // Core security assessment
     securityStatus: 'SAFE',
     riskScore: 5,
+    
+    // Classification (prevents false positives)
+    classification: createClassification('UNKNOWN'),
+    riskLevel: 'LOW' as RiskLevel,
+    classificationReason: 'No malicious activity detected. This wallet appears to be operating normally.',
     summary: 'No significant security threats detected. Your wallet appears to be in good standing. Continue practicing safe wallet hygiene.',
     detectedThreats: [],
     approvals: [
@@ -78,8 +102,15 @@ export function getMockAtRiskAnalysis(address: string, chain: Chain): WalletAnal
     address: address.toLowerCase(),
     chain,
     timestamp: new Date().toISOString(),
+    
+    // Core security assessment
     securityStatus: 'AT_RISK',
     riskScore: 45,
+    
+    // Classification (prevents false positives)
+    classification: createClassification('VICTIM'),
+    riskLevel: 'MEDIUM' as RiskLevel,
+    classificationReason: 'This wallet shows signs of potential phishing or risky approvals. The owner appears to be a victim, not an attacker.',
     summary: '2 potential security concerns detected. Review the identified risks below and consider taking preventive action.',
     detectedThreats: [
       {
@@ -178,8 +209,15 @@ export function getMockCompromisedAnalysis(address: string, chain: Chain): Walle
     address: address.toLowerCase(),
     chain,
     timestamp: new Date().toISOString(),
+    
+    // Core security assessment
     securityStatus: 'COMPROMISED',
     riskScore: 85,
+    
+    // Classification (prevents false positives)
+    classification: createClassification('VICTIM'),
+    riskLevel: 'CRITICAL' as RiskLevel,
+    classificationReason: 'This wallet was drained by a wallet drainer. The owner is a victim, not an attacker. Assets were transferred to a malicious address.',
     summary: 'URGENT: 2 critical security threats detected. Immediate action recommended. Review the recovery plan below to protect remaining assets.',
     detectedThreats: [
       {

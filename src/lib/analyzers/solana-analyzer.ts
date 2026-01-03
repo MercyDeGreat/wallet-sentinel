@@ -103,12 +103,43 @@ export class SolanaAnalyzer {
       ? this.generateRecoveryPlan(threats, approvals)
       : undefined;
 
+    // Build default classification for Solana
+    // Solana analysis is simpler - no directional analysis for now
+    const classification: import('@/types').WalletClassification = {
+      role: threats.length === 0 ? 'UNKNOWN' : 'VICTIM',
+      confidence: 'MEDIUM',
+      evidence: threats.length === 0 
+        ? [{ type: 'NORMAL_ACTIVITY', description: 'No malicious activity detected', weight: 'HIGH' as const }]
+        : [{ type: 'OUTBOUND_TO_DRAINER', description: 'Potential threat detected', weight: 'MEDIUM' as const }],
+      isMalicious: false,
+      isInfrastructure: false,
+      isServiceFeeReceiver: false,
+    };
+    
+    const classificationReason = threats.length === 0
+      ? 'No malicious activity detected. This wallet appears to be operating normally.'
+      : 'Potential security threats detected. Review the identified risks.';
+    
+    const riskLevel: import('@/types').RiskLevel = 
+      riskScore >= 75 ? 'CRITICAL' :
+      riskScore >= 50 ? 'HIGH' :
+      riskScore >= 25 ? 'MEDIUM' : 'LOW';
+
     return {
       address,
       chain: 'solana',
       timestamp: new Date().toISOString(),
+      
+      // Core security assessment
       securityStatus,
       riskScore,
+      
+      // Classification (prevents false positives)
+      classification,
+      riskLevel,
+      classificationReason,
+      
+      // Detailed analysis
       summary: this.generateSummary(securityStatus, threats, approvals),
       detectedThreats: threats,
       approvals,
