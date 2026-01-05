@@ -28,6 +28,7 @@ import {
   RiskFactor,
   RiskFactorType,
   DirectionalAnalysis,
+  SecurityStatus,
 } from '@/types';
 import {
   CHAIN_RPC_CONFIG,
@@ -55,6 +56,13 @@ import {
   isInfrastructureContract,
 } from '../detection/safe-contracts';
 import { EXCHANGE_HOT_WALLETS } from '../detection/transaction-labeler';
+import {
+  analyzeWalletCompromise,
+  type TransactionForAnalysis,
+  type ApprovalForAnalysis,
+  type TokenTransferForAnalysis,
+  type CompromiseAnalysisResult,
+} from '../detection/compromise-detector';
 
 // ============================================
 // INTERFACES
@@ -233,9 +241,52 @@ export class EVMAnalyzer {
       transactions
     );
     
+    // ============================================
+    // COMPREHENSIVE COMPROMISE ANALYSIS
+    // ============================================
+    // This is the NEW conservative detection that ensures:
+    // - SAFE is only returned when ALL safety checks pass
+    // - Any uncertainty results in POTENTIALLY_COMPROMISED
+    // - Clear evidence results in COMPROMISED
+    
+    const compromiseAnalysis = await this.performCompromiseAnalysis(
+      normalizedAddress,
+      transactions,
+      approvalEvents,
+      tokenTransfers,
+      currentBalance
+    );
+    
+    // Add compromise evidence to threats if detected
+    if (compromiseAnalysis.evidence.length > 0) {
+      for (const ev of compromiseAnalysis.evidence) {
+        if (ev.severity === 'CRITICAL' || ev.severity === 'HIGH') {
+          threats.push({
+            id: `compromise-${ev.code}-${Date.now()}`,
+            type: this.mapCompromiseCodeToAttackType(ev.code),
+            severity: ev.severity,
+            title: this.getCompromiseThreatTitle(ev.code),
+            description: ev.description,
+            technicalDetails: `Code: ${ev.code}\nConfidence: ${ev.confidence}%${ev.relatedAddress ? `\nRelated Address: ${ev.relatedAddress}` : ''}`,
+            detectedAt: ev.timestamp || new Date().toISOString(),
+            relatedAddresses: ev.relatedAddress ? [ev.relatedAddress] : [],
+            relatedTransactions: ev.relatedTxHash ? [ev.relatedTxHash] : [],
+            ongoingRisk: ev.severity === 'CRITICAL',
+          });
+        }
+      }
+    }
+    
     const riskScore = this.calculateRiskScore(threats, analyzedApprovals);
     const riskLevel = this.determineRiskLevel(riskScore, threats);
-    const securityStatus = this.determineSecurityStatus(riskScore, threats);
+    
+    // USE COMPROMISE ANALYSIS FOR SECURITY STATUS (more conservative)
+    const securityStatus = this.determineSecurityStatusConservative(
+      riskScore,
+      threats,
+      compromiseAnalysis
+    );
+    
     const suspiciousTransactions = this.buildSuspiciousTransactions(transactions, threats);
     const recommendations = this.generateRecommendations(threats, analyzedApprovals, securityStatus);
     const recoveryPlan = securityStatus !== 'SAFE' ? this.generateRecoveryPlan(threats, analyzedApprovals) : undefined;
@@ -2096,7 +2147,7 @@ export class EVMAnalyzer {
     };
   }
 
-  private determineSecurityStatus(riskScore: number, threats: DetectedThreat[]): 'SAFE' | 'AT_RISK' | 'COMPROMISED' {
+  private determineSecurityStatus(riskScore: number, threats: DetectedThreat[]): SecurityStatus {
     const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
     
     // Check for definitive compromise indicators
@@ -2121,6 +2172,204 @@ export class EVMAnalyzer {
     }
     
     return 'SAFE';
+  }
+
+  // ============================================
+  // CONSERVATIVE SECURITY STATUS DETERMINATION
+  // ============================================
+  // A wallet can only be labeled SAFE if:
+  // - No malicious approvals exist
+  // - No abnormal execution patterns exist
+  // - No attacker-linked addresses have interacted with it
+  // - No known post-compromise behaviors are detected
+  //
+  // If ANY uncertainty exists → POTENTIALLY_COMPROMISED
+  
+  private determineSecurityStatusConservative(
+    riskScore: number,
+    threats: DetectedThreat[],
+    compromiseAnalysis: CompromiseAnalysisResult
+  ): SecurityStatus {
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    
+    // ============================================
+    // RULE 1: Compromise analysis takes priority
+    // ============================================
+    if (compromiseAnalysis.securityStatus === 'COMPROMISED') {
+      console.log(`[SECURITY] Wallet marked COMPROMISED by compromise analysis: ${compromiseAnalysis.summary}`);
+      return 'COMPROMISED';
+    }
+    
+    if (compromiseAnalysis.securityStatus === 'AT_RISK') {
+      console.log(`[SECURITY] Wallet marked AT_RISK by compromise analysis: ${compromiseAnalysis.summary}`);
+      return 'AT_RISK';
+    }
+    
+    if (compromiseAnalysis.securityStatus === 'POTENTIALLY_COMPROMISED') {
+      console.log(`[SECURITY] Wallet marked POTENTIALLY_COMPROMISED: ${compromiseAnalysis.summary}`);
+      // Return POTENTIALLY_COMPROMISED - the UI now handles this status
+      return 'POTENTIALLY_COMPROMISED';
+    }
+    
+    // ============================================
+    // RULE 2: Any threats = not safe
+    // ============================================
+    if (safeThreats.length > 0) {
+      const hasCritical = safeThreats.some(t => t?.severity === 'CRITICAL');
+      const hasHigh = safeThreats.some(t => t?.severity === 'HIGH');
+      
+      if (hasCritical) {
+        return 'COMPROMISED';
+      }
+      if (hasHigh || safeThreats.length >= 2) {
+        return 'AT_RISK';
+      }
+      // Even low severity = cannot be SAFE
+      return 'AT_RISK';
+    }
+    
+    // ============================================
+    // RULE 3: Risk score thresholds
+    // ============================================
+    if (riskScore >= 50) {
+      return 'COMPROMISED';
+    }
+    if (riskScore >= 15) {
+      return 'AT_RISK';
+    }
+    
+    // ============================================
+    // RULE 4: Safety blockers check
+    // ============================================
+    if (!compromiseAnalysis.canBeSafe || compromiseAnalysis.safetyBlockers.length > 0) {
+      console.log(`[SECURITY] Cannot mark SAFE - blockers: ${compromiseAnalysis.safetyBlockers.join(', ')}`);
+      return 'AT_RISK';
+    }
+    
+    // ============================================
+    // RULE 5: All safety checks must pass
+    // ============================================
+    if (!compromiseAnalysis.safetyChecks.allChecksPass) {
+      const failedChecks: string[] = [];
+      if (!compromiseAnalysis.safetyChecks.noMaliciousApprovals) failedChecks.push('malicious approvals');
+      if (!compromiseAnalysis.safetyChecks.noAttackerLinkedTxs) failedChecks.push('attacker-linked txs');
+      if (!compromiseAnalysis.safetyChecks.noUnexplainedAssetLoss) failedChecks.push('unexplained asset loss');
+      if (!compromiseAnalysis.safetyChecks.noIndirectDrainerExposure) failedChecks.push('drainer exposure');
+      if (!compromiseAnalysis.safetyChecks.noTimingAnomalies) failedChecks.push('timing anomalies');
+      if (!compromiseAnalysis.safetyChecks.noSuspiciousApprovalPatterns) failedChecks.push('suspicious approvals');
+      
+      console.log(`[SECURITY] Safety checks failed: ${failedChecks.join(', ')}`);
+      return 'AT_RISK';
+    }
+    
+    // ============================================
+    // FINAL CHECK: Would this wallet still be safe
+    // if the owner lost control of approvals?
+    // ============================================
+    console.log(`[SECURITY] All checks passed - wallet is SAFE`);
+    return 'SAFE';
+  }
+
+  // ============================================
+  // COMPROMISE ANALYSIS INTEGRATION
+  // ============================================
+  
+  private async performCompromiseAnalysis(
+    walletAddress: string,
+    transactions: TransactionData[],
+    approvals: ApprovalEvent[],
+    tokenTransfers: TokenTransfer[],
+    currentBalance: string
+  ): Promise<CompromiseAnalysisResult> {
+    // Convert to the format expected by compromise detector
+    const txsForAnalysis: TransactionForAnalysis[] = transactions.map(tx => ({
+      hash: tx.hash,
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      input: tx.input,
+      timestamp: tx.timestamp,
+      blockNumber: tx.blockNumber,
+      methodId: tx.input?.slice(0, 10),
+      isError: tx.isError,
+      gasUsed: tx.gasUsed,
+    }));
+    
+    const approvalsForAnalysis: ApprovalForAnalysis[] = approvals.map(a => ({
+      token: a.token,
+      tokenSymbol: a.tokenSymbol || 'Unknown',
+      spender: a.spender,
+      owner: walletAddress,
+      amount: a.amount || '0',
+      isUnlimited: BigInt(a.amount || '0') > BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'),
+      timestamp: a.timestamp,
+      transactionHash: a.transactionHash || '',
+      blockNumber: a.blockNumber,
+      spenderIsEOA: !isSafeContract(a.spender.toLowerCase()) && !isDeFiProtocol(a.spender.toLowerCase()),
+      spenderIsVerified: !!isSafeContract(a.spender.toLowerCase()) || !!isDeFiProtocol(a.spender.toLowerCase()),
+      wasRevoked: false, // ApprovalEvent doesn't have this field
+    }));
+    
+    const transfersForAnalysis: TokenTransferForAnalysis[] = tokenTransfers.map(t => ({
+      from: t.from,
+      to: t.to,
+      value: t.value,
+      hash: t.hash,
+      timestamp: t.timestamp,
+      tokenSymbol: t.tokenSymbol || 'Unknown',
+      tokenAddress: t.tokenAddress,
+    }));
+    
+    return analyzeWalletCompromise(
+      walletAddress,
+      this.chain,
+      txsForAnalysis,
+      approvalsForAnalysis,
+      transfersForAnalysis,
+      currentBalance
+    );
+  }
+  
+  private mapCompromiseCodeToAttackType(code: string): AttackType {
+    const mapping: Record<string, AttackType> = {
+      'UNLIMITED_APPROVAL_EOA': 'APPROVAL_HIJACK',
+      'UNLIMITED_APPROVAL_UNVERIFIED': 'APPROVAL_HIJACK',
+      'APPROVAL_THEN_DRAIN': 'WALLET_DRAINER',
+      'POST_INCIDENT_REVOKE': 'WALLET_DRAINER',
+      'DRAINER_CLUSTER_INTERACTION': 'WALLET_DRAINER',
+      'SHARED_ATTACKER_PATTERN': 'WALLET_DRAINER',
+      'SUDDEN_OUTFLOW_POST_APPROVAL': 'WALLET_DRAINER',
+      'INACTIVE_PERIOD_DRAIN': 'PRIVATE_KEY_LEAK',
+      'MULTI_ASSET_RAPID_DRAIN': 'PRIVATE_KEY_LEAK',
+      'ATTACKER_LINKED_ADDRESS': 'WALLET_DRAINER',
+      'UNEXPLAINED_ASSET_LOSS': 'WALLET_DRAINER',
+      'INDIRECT_DRAINER_EXPOSURE': 'WALLET_DRAINER',
+      'SUSPICIOUS_APPROVAL_PATTERN': 'APPROVAL_HIJACK',
+      'TIMING_ANOMALY': 'WALLET_DRAINER',
+      'UNKNOWN_RECIPIENT_DRAIN': 'WALLET_DRAINER',
+    };
+    return mapping[code] || 'WALLET_DRAINER';
+  }
+  
+  private getCompromiseThreatTitle(code: string): string {
+    const titles: Record<string, string> = {
+      'UNLIMITED_APPROVAL_EOA': 'Unlimited Approval to EOA Address',
+      'UNLIMITED_APPROVAL_UNVERIFIED': 'Unlimited Approval to Unverified Contract',
+      'APPROVAL_THEN_DRAIN': 'Assets Drained After Approval',
+      'POST_INCIDENT_REVOKE': 'Post-Incident Approval Revocation',
+      'DRAINER_CLUSTER_INTERACTION': 'Interaction with Known Drainer',
+      'SHARED_ATTACKER_PATTERN': 'Part of Multi-Victim Attack Pattern',
+      'SUDDEN_OUTFLOW_POST_APPROVAL': 'Rapid Asset Outflow After Approval',
+      'INACTIVE_PERIOD_DRAIN': 'Activity After Long Inactivity',
+      'MULTI_ASSET_RAPID_DRAIN': 'Multiple Assets Drained Rapidly',
+      'ATTACKER_LINKED_ADDRESS': 'Interaction with Attacker-Linked Address',
+      'UNEXPLAINED_ASSET_LOSS': 'Unexplained Asset Loss Detected',
+      'INDIRECT_DRAINER_EXPOSURE': 'Indirect Exposure to Drainer',
+      'SUSPICIOUS_APPROVAL_PATTERN': 'Suspicious Approval Pattern',
+      'TIMING_ANOMALY': 'Suspicious Timing Anomaly',
+      'UNKNOWN_RECIPIENT_DRAIN': 'Funds Sent to Unknown Recipient',
+    };
+    return titles[code] || 'Compromise Indicator Detected';
   }
 
   // ============================================
@@ -2153,9 +2402,13 @@ export class EVMAnalyzer {
     return suspicious;
   }
 
-  private generateSummary(status: 'SAFE' | 'AT_RISK' | 'COMPROMISED', threats: DetectedThreat[], approvals: TokenApproval[]): string {
+  private generateSummary(status: SecurityStatus, threats: DetectedThreat[], approvals: TokenApproval[]): string {
     if (status === 'SAFE') {
       return 'No significant security threats detected. Your wallet appears to be in good standing.';
+    }
+    if (status === 'POTENTIALLY_COMPROMISED') {
+      const safeThreats = Array.isArray(threats) ? threats : [];
+      return `Cannot confirm wallet safety. ${safeThreats.length} indicator(s) require review. This does NOT mean the wallet is safe.`;
     }
     if (status === 'AT_RISK') {
       const safeThreats = Array.isArray(threats) ? threats : [];
@@ -2170,7 +2423,7 @@ export class EVMAnalyzer {
     return `🚨 CRITICAL: ${safeThreats.length} critical security threat(s) detected. Review immediately.`;
   }
 
-  private generateRecommendations(threats: DetectedThreat[], approvals: TokenApproval[], status: 'SAFE' | 'AT_RISK' | 'COMPROMISED'): SecurityRecommendation[] {
+  private generateRecommendations(threats: DetectedThreat[], approvals: TokenApproval[], status: SecurityStatus): SecurityRecommendation[] {
     const recommendations: SecurityRecommendation[] = [];
     
     // Safe array guards

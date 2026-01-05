@@ -139,6 +139,7 @@ export function getRiskLevelBgColor(level: RiskLevel): string {
 export function getSecurityStatusColor(status: SecurityStatus): string {
   const colors: Record<SecurityStatus, string> = {
     SAFE: 'text-status-safe',
+    POTENTIALLY_COMPROMISED: 'text-orange-400',
     AT_RISK: 'text-status-warning',
     COMPROMISED: 'text-status-danger',
   };

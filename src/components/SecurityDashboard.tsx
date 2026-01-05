@@ -414,7 +414,14 @@ function StatusBadge({
   // For Solana, use chain-aware labels to avoid false "SAFE" claims
   const isSolana = chain === 'solana';
   
-  const config = {
+  const config: Record<SecurityStatus, {
+    icon: typeof CheckCircle;
+    label: string;
+    bg: string;
+    border: string;
+    text: string;
+    dot: string;
+  }> = {
     SAFE: {
       icon: isSolana ? Shield : CheckCircle, // Different icon for Solana
       label: isSolana 
@@ -424,6 +431,14 @@ function StatusBadge({
       border: isSolana ? 'border-blue-500/30' : 'border-status-safe/30',
       text: isSolana ? 'text-blue-400' : 'text-status-safe',
       dot: isSolana ? 'status-dot-info' : 'status-dot-safe',
+    },
+    POTENTIALLY_COMPROMISED: {
+      icon: AlertTriangle,
+      label: 'POTENTIALLY COMPROMISED',
+      bg: 'bg-orange-500/10',
+      border: 'border-orange-500/30',
+      text: 'text-orange-400',
+      dot: 'status-dot-warning',
     },
     AT_RISK: {
       icon: AlertTriangle,
@@ -443,7 +458,8 @@ function StatusBadge({
     },
   };
 
-  const { icon: Icon, label, bg, border, text, dot } = config[status];
+  const statusConfig = config[status] || config.AT_RISK; // Default to AT_RISK if unknown status
+  const { icon: Icon, label, bg, border, text, dot } = statusConfig;
 
   return (
     <div className={`flex items-center gap-3 px-4 py-3 rounded-xl ${bg} border ${border}`}>
@@ -529,10 +545,14 @@ function getStatusBorderClass(status: SecurityStatus): string {
   switch (status) {
     case 'SAFE':
       return 'border-l-4 border-l-status-safe';
+    case 'POTENTIALLY_COMPROMISED':
+      return 'border-l-4 border-l-orange-500';
     case 'AT_RISK':
       return 'border-l-4 border-l-status-warning';
     case 'COMPROMISED':
       return 'border-l-4 border-l-status-danger';
+    default:
+      return 'border-l-4 border-l-status-warning';
   }
 }
 

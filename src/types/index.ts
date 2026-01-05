@@ -14,7 +14,45 @@
 export type Chain = 'ethereum' | 'base' | 'bnb' | 'solana';
 
 // Security status levels
-export type SecurityStatus = 'SAFE' | 'AT_RISK' | 'COMPROMISED';
+// CRITICAL: SAFE is ONLY allowed when ALL of the following are true:
+// - Zero malicious approvals
+// - Zero attacker-linked transactions
+// - Zero unexplained asset loss
+// - Zero indirect exposure to confirmed drainers
+export type SecurityStatus = 
+  | 'SAFE'                      // Absolutely no risk indicators (strict verification required)
+  | 'POTENTIALLY_COMPROMISED'   // Uncertainty exists - cannot confirm safety
+  | 'AT_RISK'                   // Active risk indicators present
+  | 'COMPROMISED';              // Confirmed compromise evidence
+
+// Reason codes for compromise detection
+export type CompromiseReasonCode =
+  | 'UNLIMITED_APPROVAL_EOA'           // Unlimited approval to EOA (not contract)
+  | 'UNLIMITED_APPROVAL_UNVERIFIED'    // Unlimited approval to unverified contract
+  | 'APPROVAL_THEN_DRAIN'              // Approval followed by attacker transfer
+  | 'POST_INCIDENT_REVOKE'             // Approval revoked after asset loss
+  | 'DRAINER_CLUSTER_INTERACTION'      // Interaction with known drainer cluster
+  | 'SHARED_ATTACKER_PATTERN'          // Same attacker targeted multiple victims
+  | 'SUDDEN_OUTFLOW_POST_APPROVAL'     // Asset outflow shortly after approval
+  | 'INACTIVE_PERIOD_DRAIN'            // Asset movement during user inactivity
+  | 'MULTI_ASSET_RAPID_DRAIN'          // Multiple asset types drained quickly
+  | 'ATTACKER_LINKED_ADDRESS'          // Transaction with attacker-linked address
+  | 'UNEXPLAINED_ASSET_LOSS'           // Assets lost without clear user intent
+  | 'INDIRECT_DRAINER_EXPOSURE'        // Indirect contact with confirmed drainer
+  | 'SUSPICIOUS_APPROVAL_PATTERN'      // Abnormal approval behavior
+  | 'TIMING_ANOMALY'                   // Suspicious timing patterns
+  | 'UNKNOWN_RECIPIENT_DRAIN';         // Funds sent to unknown address after approval
+
+// Compromise evidence structure
+export interface CompromiseEvidence {
+  code: CompromiseReasonCode;
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  description: string;
+  relatedTxHash?: string;
+  relatedAddress?: string;
+  timestamp?: string;
+  confidence: number; // 0-100
+}
 
 // ============================================
 // CHAIN-AWARE SECURITY STATUS
