@@ -374,6 +374,8 @@ export interface TokenTransferForAnalysis {
   timestamp: number;
   tokenSymbol: string;
   tokenAddress: string;
+  blockNumber?: number;       // Optional: Block number of the transfer
+  tokenType?: 'ERC20' | 'ERC721' | 'ERC1155'; // Optional: Token type
 }
 
 export interface CompromiseAnalysisResult {
@@ -428,6 +430,9 @@ export interface CompromiseAnalysisResult {
   
   // Historical threats (no longer active, remediated)
   historicalThreats: CompromiseEvidence[];
+  
+  // Detailed reasoning output (for debugging/transparency)
+  riskReasoning?: import('@/types').RiskReasoningOutput;
 }
 
 export interface SafetyCheckResults {
@@ -584,8 +589,54 @@ export async function analyzeWalletCompromise(
     ? Math.floor((currentTimestamp - Math.max(...maliciousTxTimestamps)) / (24 * 60 * 60))
     : undefined;
   
+  // ============================================
+  // G. CONFIRMED DRAINER INTERACTION CHECK (CRITICAL!)
+  // ============================================
+  // If wallet has EVER interacted with a confirmed drainer,
+  // it can NEVER be marked SAFE - only PREVIOUSLY_COMPROMISED at best.
+  const drainerCheck = checkConfirmedDrainerInteraction(transactions, tokenTransfers, approvals, chain);
+  
+  if (drainerCheck.hasConfirmedDrainerInteraction) {
+    console.log(`[CompromiseDetector] CONFIRMED DRAINER INTERACTION detected! Contracts: ${drainerCheck.drainerContractsInteracted.join(', ')}`);
+    
+    // Add evidence for drainer interaction
+    evidence.push({
+      code: 'CONFIRMED_DRAINER_INTERACTION',
+      severity: 'CRITICAL',
+      description: `Wallet has interacted with confirmed drainer contract(s): ${drainerCheck.drainerTypes.join(', ')}. This interaction is permanently recorded and prevents SAFE status.`,
+      relatedTxHash: drainerCheck.firstInteractionTxHash,
+      timestamp: drainerCheck.firstInteractionTimestamp,
+      confidence: 100,
+      isHistorical: true,
+      isActiveThreat: false,
+    });
+    reasonCodes.push('CONFIRMED_DRAINER_INTERACTION');
+    safetyBlockers.push(`Historical drainer interaction detected: ${drainerCheck.drainerTypes.join(', ')}`);
+  }
+  
+  // ============================================
+  // H. ASSET SWEEP DETECTION
+  // ============================================
+  const sweepCheck = detectAssetSweep(transactions, tokenTransfers, normalized);
+  
+  if (sweepCheck.assetSweepDetected) {
+    console.log(`[CompromiseDetector] ASSET SWEEP detected! ${sweepCheck.sweepTransactions.length} transactions within ${sweepCheck.sweepBlockRange?.end ? sweepCheck.sweepBlockRange.end - sweepCheck.sweepBlockRange.start : 0} blocks`);
+    
+    evidence.push({
+      code: 'ASSET_SWEEP_DETECTED',
+      severity: 'CRITICAL',
+      description: `Rapid multi-asset sweep detected. ${sweepCheck.assetsSwept.length} assets drained within ≤3 blocks to ${sweepCheck.sweepDestination?.slice(0, 10)}...`,
+      relatedTxHash: sweepCheck.sweepTransactions[0],
+      confidence: 95,
+      isHistorical: true,
+      isActiveThreat: false,
+    });
+    reasonCodes.push('ASSET_SWEEP_DETECTED');
+    safetyBlockers.push(`Asset sweep detected: ${sweepCheck.assetsSwept.length} assets drained rapidly`);
+  }
+  
   // Build historical compromise info
-  const hasHistoricalIncident = evidence.length > 0 || airdropIncident !== null;
+  const hasHistoricalIncident = evidence.length > 0 || airdropIncident !== null || drainerCheck.hasConfirmedDrainerInteraction;
   const isCurrentlyActive = activeThreats.length > 0 || hasActiveMaliciousApproval || hasOngoingDrains;
   
   const historicalCompromise = hasHistoricalIncident ? {
@@ -608,11 +659,37 @@ export async function analyzeWalletCompromise(
       daysSinceLastIncident,
     },
   } : undefined;
+  
+  // ============================================
+  // I. BUILD RISK REASONING OUTPUT
+  // ============================================
+  const riskReasoning: import('@/types').RiskReasoningOutput = {
+    drainerContractsInteracted: drainerCheck.drainerContractsInteracted,
+    sweepTransactions: sweepCheck.sweepTransactions,
+    maliciousContracts: evidence.filter(e => e.code === 'MALICIOUS_CONTRACT_INTERACTION').map(e => e.relatedAddress || '').filter(Boolean),
+    firstCompromiseBlock: drainerCheck.firstInteractionBlock,
+    firstCompromiseTxHash: drainerCheck.firstInteractionTxHash,
+    firstCompromiseTimestamp: drainerCheck.firstInteractionTimestamp,
+    affectedChains: [chain],
+    permanentFlags: [
+      ...(drainerCheck.hasConfirmedDrainerInteraction ? ['CONFIRMED_DRAINER_INTERACTION' as const] : []),
+      ...(sweepCheck.assetSweepDetected ? ['ASSET_SWEEP_DETECTED' as const] : []),
+      ...(evidence.some(e => e.code === 'MALICIOUS_CONTRACT_INTERACTION') ? ['MALICIOUS_CONTRACT_INTERACTION' as const] : []),
+    ],
+    whyNotSafe: [
+      ...(drainerCheck.hasConfirmedDrainerInteraction ? [`Interacted with confirmed drainer(s): ${drainerCheck.drainerTypes.join(', ')}`] : []),
+      ...(sweepCheck.assetSweepDetected ? [`Asset sweep detected: ${sweepCheck.assetsSwept.length} assets drained`] : []),
+      ...safetyBlockers,
+    ],
+  };
 
   // ============================================
   // DETERMINE FINAL STATUS (with historical awareness)
   // ============================================
-  const { status, confidence, summary } = determineSecurityStatusWithHistory(
+  // CRITICAL: If drainer interaction or asset sweep detected, can NEVER be SAFE
+  const hasPermanentRiskFlag = drainerCheck.hasConfirmedDrainerInteraction || sweepCheck.assetSweepDetected;
+  
+  let { status, confidence, summary } = determineSecurityStatusWithHistory(
     evidence,
     reasonCodes,
     safetyChecks,
@@ -621,6 +698,14 @@ export async function analyzeWalletCompromise(
     historicalThreats,
     historicalCompromise
   );
+  
+  // OVERRIDE: Enforce permanent risk flags
+  if (hasPermanentRiskFlag && status === 'SAFE') {
+    console.log(`[CompromiseDetector] OVERRIDE: Status was SAFE but permanent risk flags detected - changing to PREVIOUSLY_COMPROMISED`);
+    status = 'PREVIOUSLY_COMPROMISED';
+    confidence = Math.max(confidence, 70);
+    summary = `Previously compromised. ${drainerCheck.hasConfirmedDrainerInteraction ? `Interacted with known drainer(s): ${drainerCheck.drainerTypes.join(', ')}. ` : ''}${sweepCheck.assetSweepDetected ? `Asset sweep detected. ` : ''}Revoked approvals do not erase this history. Wallet cannot be marked SAFE.`;
+  }
 
   return {
     securityStatus: status,
@@ -629,11 +714,12 @@ export async function analyzeWalletCompromise(
     confidence,
     summary,
     safetyChecks,
-    canBeSafe: safetyChecks.allChecksPass && safetyBlockers.length === 0 && activeThreats.length === 0,
+    canBeSafe: safetyChecks.allChecksPass && safetyBlockers.length === 0 && activeThreats.length === 0 && !hasPermanentRiskFlag,
     safetyBlockers,
     historicalCompromise,
     activeThreats,
     historicalThreats,
+    riskReasoning,
   };
 }
 
@@ -1326,12 +1412,211 @@ function determineSecurityStatus(
 }
 
 // ============================================
+// CONFIRMED DRAINER INTERACTION CHECK
+// ============================================
+// If wallet has EVER interacted with a confirmed drainer → NEVER SAFE
+// This includes Pink, Angel, Inferno, MS, Monkey drainers, etc.
+// Revoked approvals do NOT erase this history.
+
+interface DrainerInteractionResult {
+  hasConfirmedDrainerInteraction: boolean;
+  drainerContractsInteracted: string[];
+  firstInteractionTxHash?: string;
+  firstInteractionBlock?: number;
+  firstInteractionTimestamp?: string;
+  drainerTypes: string[];
+}
+
+function checkConfirmedDrainerInteraction(
+  transactions: TransactionForAnalysis[],
+  tokenTransfers: TokenTransferForAnalysis[],
+  approvals: ApprovalForAnalysis[],
+  chain: Chain
+): DrainerInteractionResult {
+  const drainerContractsInteracted: string[] = [];
+  const drainerTypes: string[] = [];
+  let firstInteractionTxHash: string | undefined;
+  let firstInteractionBlock: number | undefined;
+  let firstInteractionTimestamp: string | undefined;
+  
+  // Check all transactions for drainer interactions
+  for (const tx of transactions) {
+    const toAddr = tx.to?.toLowerCase();
+    const fromAddr = tx.from?.toLowerCase();
+    
+    // Check if interacting with known drainer
+    if (toAddr) {
+      const drainerInfo = isMaliciousAddress(toAddr, chain);
+      const isDrainer = drainerInfo !== null || isDrainerRecipient(toAddr);
+      
+      if (isDrainer && !drainerContractsInteracted.includes(toAddr)) {
+        drainerContractsInteracted.push(toAddr);
+        if (drainerInfo?.name) drainerTypes.push(drainerInfo.name);
+        
+        if (!firstInteractionTxHash || tx.blockNumber < (firstInteractionBlock || Infinity)) {
+          firstInteractionTxHash = tx.hash;
+          firstInteractionBlock = tx.blockNumber;
+          firstInteractionTimestamp = tx.timestamp ? new Date(tx.timestamp * 1000).toISOString() : undefined;
+        }
+      }
+    }
+  }
+  
+  // Check all token transfers for drainer destinations
+  for (const transfer of tokenTransfers) {
+    const toAddr = transfer.to?.toLowerCase();
+    
+    if (toAddr) {
+      const drainerInfo = isMaliciousAddress(toAddr, chain);
+      const isDrainer = drainerInfo !== null || isDrainerRecipient(toAddr);
+      
+      if (isDrainer && !drainerContractsInteracted.includes(toAddr)) {
+        drainerContractsInteracted.push(toAddr);
+        if (drainerInfo?.name) drainerTypes.push(drainerInfo.name);
+        
+        if (!firstInteractionTxHash) {
+          firstInteractionTxHash = transfer.hash;
+          firstInteractionTimestamp = transfer.timestamp ? new Date(transfer.timestamp * 1000).toISOString() : undefined;
+        }
+      }
+    }
+  }
+  
+  // Check all approvals for drainer spenders
+  for (const approval of approvals) {
+    const spenderAddr = approval.spender?.toLowerCase();
+    
+    if (spenderAddr) {
+      const drainerInfo = isMaliciousAddress(spenderAddr, chain);
+      const isDrainer = drainerInfo !== null || isDrainerRecipient(spenderAddr);
+      
+      if (isDrainer && !drainerContractsInteracted.includes(spenderAddr)) {
+        drainerContractsInteracted.push(spenderAddr);
+        if (drainerInfo?.name) drainerTypes.push(drainerInfo.name);
+        
+        if (!firstInteractionTxHash || approval.blockNumber < (firstInteractionBlock || Infinity)) {
+          firstInteractionTxHash = approval.transactionHash;
+          firstInteractionBlock = approval.blockNumber;
+        }
+      }
+    }
+  }
+  
+  return {
+    hasConfirmedDrainerInteraction: drainerContractsInteracted.length > 0,
+    drainerContractsInteracted,
+    firstInteractionTxHash,
+    firstInteractionBlock,
+    firstInteractionTimestamp,
+    drainerTypes: [...new Set(drainerTypes)],
+  };
+}
+
+// ============================================
+// ASSET SWEEP DETECTION
+// ============================================
+// Detects rapid multi-asset outflows:
+// - ERC20 + NFTs drained within ≤3 blocks
+// - Assets sent to fresh/burner addresses
+// - No inbound value to compensate
+
+interface AssetSweepResult {
+  assetSweepDetected: boolean;
+  sweepTransactions: string[];
+  sweepBlockRange?: { start: number; end: number };
+  assetsSwept: { type: 'ERC20' | 'NFT'; symbol?: string; amount?: string }[];
+  sweepDestination?: string;
+}
+
+function detectAssetSweep(
+  transactions: TransactionForAnalysis[],
+  tokenTransfers: TokenTransferForAnalysis[],
+  walletAddress: string
+): AssetSweepResult {
+  const normalized = walletAddress.toLowerCase();
+  const sweepTransactions: string[] = [];
+  const assetsSwept: { type: 'ERC20' | 'NFT'; symbol?: string; amount?: string }[] = [];
+  
+  // Group outbound transfers by block
+  const outboundByBlock = new Map<number, TokenTransferForAnalysis[]>();
+  
+  for (const transfer of tokenTransfers) {
+    if (transfer.from?.toLowerCase() !== normalized) continue;
+    
+    const block = transfer.blockNumber || 0;
+    if (!outboundByBlock.has(block)) {
+      outboundByBlock.set(block, []);
+    }
+    outboundByBlock.get(block)!.push(transfer);
+  }
+  
+  // Sort blocks
+  const sortedBlocks = [...outboundByBlock.keys()].sort((a, b) => a - b);
+  
+  // Look for rapid multi-asset outflows within ≤3 blocks
+  for (let i = 0; i < sortedBlocks.length; i++) {
+    const startBlock = sortedBlocks[i];
+    const endBlockIndex = sortedBlocks.findIndex(b => b > startBlock + 3);
+    const endIndex = endBlockIndex === -1 ? sortedBlocks.length : endBlockIndex;
+    
+    // Collect all transfers within 3 blocks
+    const windowTransfers: TokenTransferForAnalysis[] = [];
+    const destinations = new Set<string>();
+    
+    for (let j = i; j < endIndex; j++) {
+      const transfers = outboundByBlock.get(sortedBlocks[j]) || [];
+      windowTransfers.push(...transfers);
+      transfers.forEach(t => {
+        if (t.to) destinations.add(t.to.toLowerCase());
+      });
+    }
+    
+    // Check if this looks like a sweep:
+    // - Multiple different assets (≥2 unique tokens)
+    // - Same or few destinations (≤2)
+    // - No inbound value in same window
+    const uniqueTokens = new Set(windowTransfers.map(t => t.tokenAddress?.toLowerCase()));
+    
+    if (uniqueTokens.size >= 2 && destinations.size <= 2 && windowTransfers.length >= 2) {
+      // This looks like an asset sweep
+      for (const transfer of windowTransfers) {
+        if (!sweepTransactions.includes(transfer.hash)) {
+          sweepTransactions.push(transfer.hash);
+        }
+        assetsSwept.push({
+          type: transfer.tokenType === 'ERC721' || transfer.tokenType === 'ERC1155' ? 'NFT' : 'ERC20',
+          symbol: transfer.tokenSymbol,
+          amount: transfer.value,
+        });
+      }
+      
+      return {
+        assetSweepDetected: true,
+        sweepTransactions,
+        sweepBlockRange: { start: startBlock, end: sortedBlocks[endIndex - 1] || startBlock },
+        assetsSwept,
+        sweepDestination: [...destinations][0],
+      };
+    }
+  }
+  
+  return {
+    assetSweepDetected: false,
+    sweepTransactions: [],
+    assetsSwept: [],
+  };
+}
+
+// ============================================
 // DETERMINE FINAL STATUS WITH HISTORICAL AWARENESS
 // ============================================
 // Key distinction:
 // - ACTIVELY_COMPROMISED: Ongoing threat (active approvals, drainer access, ongoing drains)
 // - PREVIOUSLY_COMPROMISED: Historical incident but threat remediated
 // - SAFE: No history of compromise
+//
+// CRITICAL NEW RULE: If wallet has EVER interacted with a confirmed drainer,
+// it can NEVER be marked SAFE, only PREVIOUSLY_COMPROMISED at best.
 
 function determineSecurityStatusWithHistory(
   evidence: CompromiseEvidence[],

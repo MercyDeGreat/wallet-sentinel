@@ -115,7 +115,32 @@ export type CompromiseReasonCode =
   | 'INDIRECT_DRAINER_EXPOSURE'        // Indirect contact with confirmed drainer
   | 'SUSPICIOUS_APPROVAL_PATTERN'      // Abnormal approval behavior
   | 'TIMING_ANOMALY'                   // Suspicious timing patterns
-  | 'UNKNOWN_RECIPIENT_DRAIN';         // Funds sent to unknown address after approval
+  | 'UNKNOWN_RECIPIENT_DRAIN'          // Funds sent to unknown address after approval
+  // NEW: Comprehensive Risk Flags
+  | 'CONFIRMED_DRAINER_INTERACTION'    // Direct interaction with confirmed drainer (Pink, Angel, Inferno, MS, etc.)
+  | 'ASSET_SWEEP_DETECTED'             // ERC20 + NFT drained rapidly within ≤3 blocks
+  | 'MALICIOUS_CONTRACT_INTERACTION'   // Interaction with contract that executes unauthorized transfers
+  | 'CROSS_CHAIN_COMPROMISE';          // Compromised on another chain (ETH/BNB/Base/Solana)
+
+// Risk flags that PERMANENTLY prevent SAFE status
+export type PermanentRiskFlag =
+  | 'CONFIRMED_DRAINER_INTERACTION'
+  | 'ASSET_SWEEP_DETECTED'
+  | 'MALICIOUS_CONTRACT_INTERACTION'
+  | 'HISTORICAL_COMPROMISE';
+
+// Reasoning output for risk classification (for debugging/transparency)
+export interface RiskReasoningOutput {
+  drainerContractsInteracted: string[];
+  sweepTransactions: string[];
+  maliciousContracts: string[];
+  firstCompromiseBlock?: number;
+  firstCompromiseTxHash?: string;
+  firstCompromiseTimestamp?: string;
+  affectedChains: Chain[];
+  permanentFlags: PermanentRiskFlag[];
+  whyNotSafe: string[];
+}
 
 // Compromise evidence structure
 export interface CompromiseEvidence {
