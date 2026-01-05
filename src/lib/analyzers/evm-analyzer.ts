@@ -1117,7 +1117,7 @@ export class EVMAnalyzer {
         // Check if user has any ACTIVE approvals to this malicious address
         const hasActiveApproval = approvalEvents.some(a => 
           a.spender.toLowerCase() === destination &&
-          BigInt(a.value) > BigInt(0)
+          BigInt(a.amount || '0') > BigInt(0)
         );
         
         // This is a HISTORICAL interaction if:
@@ -1173,7 +1173,7 @@ export class EVMAnalyzer {
         // Check for active approvals (same as above)
         const hasActiveApproval = approvalEvents.some(a => 
           a.spender.toLowerCase() === destination &&
-          BigInt(a.value) > BigInt(0)
+          BigInt(a.amount || '0') > BigInt(0)
         );
         
         const isHistorical = !hasActiveApproval;
@@ -1987,7 +1987,7 @@ export class EVMAnalyzer {
         // CRITICAL: Check if approval is still ACTIVE
         // ============================================
         // Look for a subsequent approval to 0 (revocation) or check current value
-        const currentApprovalValue = BigInt(approval.value || '0');
+        const currentApprovalValue = BigInt(approval.amount || '0');
         const isRevoked = currentApprovalValue === BigInt(0);
         
         // Also check if there's a more recent approval to 0 for this spender
@@ -1995,7 +1995,7 @@ export class EVMAnalyzer {
           a.token.toLowerCase() === approval.token.toLowerCase() &&
           a.spender.toLowerCase() === spenderNormalized &&
           a.blockNumber > approval.blockNumber &&
-          BigInt(a.value || '0') === BigInt(0)
+          BigInt(a.amount || '0') === BigInt(0)
         );
         
         const wasRevoked = isRevoked || !!laterRevocation;
@@ -2053,7 +2053,7 @@ export class EVMAnalyzer {
             category: 'ACTIVE_RISK',
             isHistorical: false,
             approvalRevoked: false,
-            currentAllowance: approval.value,
+            currentAllowance: approval.amount,
             excludeFromRiskScore: false, // This DOES affect risk score
           });
         }

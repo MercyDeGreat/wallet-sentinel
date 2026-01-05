@@ -127,9 +127,9 @@ export interface CompromiseEvidence {
   timestamp?: string;
   confidence: number; // 0-100
   
-  // Historical vs Active classification
-  isHistorical: boolean;        // True if this is a past incident with no active threat
-  isActiveThreat: boolean;      // True if threat is currently active
+  // Historical vs Active classification (populated by classifyThreatTiming)
+  isHistorical?: boolean;       // True if this is a past incident with no active threat
+  isActiveThreat?: boolean;     // True if threat is currently active
   wasRemediated?: boolean;      // True if the issue was fixed (approval revoked, etc.)
   remediationDetails?: string;  // How it was fixed
 }
