@@ -9,6 +9,7 @@
 // 3. Infrastructure contracts (OpenSea, Uniswap) are NEVER flagged
 // 4. Service fee receivers are SAFE, not drainers
 
+import { describe, test, expect } from 'vitest';
 import { 
   isLegitimateContract, 
   isMaliciousAddress,
@@ -273,4 +274,7 @@ describe('Detection Logic Invariants', () => {
 // ✓ Service fee receivers are neutral
 // ✓ Infrastructure contracts are whitelisted
 // ✓ No false positives from association
+
+
+
 

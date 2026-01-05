@@ -46,6 +46,15 @@ import {
   type AggregatedThreatCheck,
   type ContractAnalysis,
 } from '../detection/threat-intelligence';
+import {
+  isSafeContract,
+  isDeFiProtocol,
+  isNFTMarketplace,
+  isNFTMintContract,
+  isENSContract,
+  isInfrastructureContract,
+} from '../detection/safe-contracts';
+import { EXCHANGE_HOT_WALLETS } from '../detection/transaction-labeler';
 
 // ============================================
 // INTERFACES
@@ -274,6 +283,16 @@ export class EVMAnalyzer {
     currentBalance: string,
     userAddress: string
   ): DetectedThreat | null {
+    // ============================================
+    // CRITICAL FALSE POSITIVE PREVENTION
+    // ============================================
+    // Sending assets to safe contracts/exchanges is NORMAL user activity:
+    // - DEX swaps (Uniswap, SushiSwap, etc.)
+    // - Exchange deposits (Binance, Coinbase, etc.)
+    // - NFT purchases (OpenSea, Blur, etc.)
+    // - Staking (Lido, Rocket Pool, etc.)
+    // - Bridge deposits (Arbitrum, Optimism, etc.)
+    
     // Skip if no activity
     if (transactions.length === 0 && tokenTransfers.length === 0) return null;
 
@@ -284,6 +303,23 @@ export class EVMAnalyzer {
     } catch {
       balanceWei = BigInt(0);
     }
+
+    // Helper: Check if address is a safe/legitimate destination
+    const isSafeDestination = (address: string): boolean => {
+      const normalized = address.toLowerCase();
+      // Check comprehensive safe contracts
+      if (isSafeContract(normalized)) return true;
+      // Check exchange hot wallets
+      if (EXCHANGE_HOT_WALLETS.has(normalized)) return true;
+      // Check legacy legitimate contracts
+      if (isLegitimateContract(normalized)) return true;
+      // Check specific categories
+      if (isDeFiProtocol(normalized)) return true;
+      if (isNFTMarketplace(normalized)) return true;
+      if (isENSContract(normalized)) return true;
+      if (isInfrastructureContract(normalized)) return true;
+      return false;
+    };
 
     // Collect all outbound transfers
     const outboundTransfers: { to: string; hash: string; timestamp: number; type: string; value: string }[] = [];
@@ -321,13 +357,29 @@ export class EVMAnalyzer {
 
     if (outboundTransfers.length === 0) return null;
 
-    // Check if wallet is currently empty (defined here so it's available throughout the function)
+    // ============================================
+    // FIRST: Calculate ratio of safe vs unknown destinations
+    // If most outbound goes to safe destinations, this is NORMAL
+    // ============================================
+    const safeOutbound = outboundTransfers.filter(t => isSafeDestination(t.to));
+    const safeRatio = outboundTransfers.length > 0 ? safeOutbound.length / outboundTransfers.length : 1;
+    
+    // If > 60% of outbound goes to safe destinations, NOT a drain
+    if (safeRatio > 0.6) {
+      console.log(`[detectWalletDrain] ${userAddress}: ${(safeRatio * 100).toFixed(0)}% outbound to safe destinations - NOT a drain`);
+      return null;
+    }
+
+    // Check if wallet is currently empty
     const isCurrentlyEmpty = balanceWei < BigInt('1000000000000000'); // < 0.001 ETH
 
-    // Analyze outbound pattern
+    // Analyze outbound pattern (excluding safe destinations)
     const destinationCounts: Record<string, { count: number; types: Set<string>; hashes: string[]; timestamps: number[] }> = {};
     
     for (const transfer of outboundTransfers) {
+      // CRITICAL: Skip safe destinations
+      if (isSafeDestination(transfer.to)) continue;
+      
       if (!destinationCounts[transfer.to]) {
         destinationCounts[transfer.to] = { count: 0, types: new Set(), hashes: [], timestamps: [] };
       }
@@ -337,28 +389,21 @@ export class EVMAnalyzer {
       destinationCounts[transfer.to].timestamps.push(transfer.timestamp);
     }
 
+    // If no suspicious destinations remain, NOT a drain
+    if (Object.keys(destinationCounts).length === 0) {
+      return null;
+    }
+
     // Find suspicious patterns
     for (const [destination, data] of Object.entries(destinationCounts)) {
-      // Skip known legitimate contracts
-      if (isLegitimateContract(destination)) continue;
+      // Double-check: Skip known legitimate contracts
+      if (isSafeDestination(destination)) continue;
 
-      // Check for known drainer
+      // Check for known drainer - this is the ONLY high-confidence case
       const isMalicious = isMaliciousAddress(destination, this.chain) || isDrainerRecipient(destination);
       
-      // PATTERN 1: Multiple different asset types to same address
-      // This is a strong indicator of drain (native + multiple tokens to same address)
-      const hasMultipleAssetTypes = data.types.size >= 2;
-      const hasNativeAndTokens = data.types.has('native') && 
-        Array.from(data.types).some(t => t.startsWith('token:'));
-
-      // PATTERN 2: Check time clustering (all within 30 minutes)
-      const timestamps = data.timestamps.sort((a, b) => a - b);
-      const timeSpan = timestamps.length > 1 ? (timestamps[timestamps.length - 1] - timestamps[0]) : 0;
-      const isRapid = timeSpan <= 30 * 60; // 30 minutes
-
-      // Determine threat level
+      // PATTERN 1: Confirmed drainer address
       if (isMalicious) {
-        // CONFIRMED: Transfers to known drainer
         return {
           id: `drain-confirmed-${Date.now()}`,
           type: 'WALLET_DRAINER',
@@ -373,33 +418,42 @@ export class EVMAnalyzer {
         };
       }
 
-      if (hasNativeAndTokens && isRapid && data.count >= 2) {
-        // LIKELY DRAIN: Native + tokens to same unknown address quickly
-        const severity: RiskLevel = isCurrentlyEmpty ? 'CRITICAL' : 'HIGH';
-        const threatType: AttackType = isCurrentlyEmpty ? 'PRIVATE_KEY_LEAK' : 'WALLET_DRAINER';
-        
+      // For other patterns, be VERY conservative
+      // Only flag if multiple asset types AND many transfers AND wallet is empty
+      const hasMultipleAssetTypes = data.types.size >= 3; // Require 3+ asset types
+      const hasNativeAndTokens = data.types.has('native') && 
+        Array.from(data.types).filter(t => t.startsWith('token:')).length >= 2; // Native + 2 tokens
+
+      const timestamps = data.timestamps.sort((a, b) => a - b);
+      const timeSpan = timestamps.length > 1 ? (timestamps[timestamps.length - 1] - timestamps[0]) : 0;
+      const isRapid = timeSpan <= 15 * 60; // Stricter: 15 minutes
+
+      // PATTERN 2: Multiple different asset types to same UNKNOWN address quickly
+      // AND wallet is now empty - very strong indicator
+      if (hasNativeAndTokens && isRapid && data.count >= 4 && isCurrentlyEmpty) {
         return {
           id: `drain-pattern-${Date.now()}`,
-          type: threatType,
-          severity,
-          title: isCurrentlyEmpty ? 'Wallet Appears Drained - Possible Key Compromise' : 'Suspicious Asset Transfer Pattern',
-          description: `${data.count} different assets (ETH + tokens) were sent to the same address (${destination.slice(0, 10)}...) within ${Math.ceil(timeSpan / 60)} minutes.${isCurrentlyEmpty ? ' Your wallet balance is now nearly zero.' : ''} This pattern is consistent with wallet drainer activity or private key compromise.`,
+          type: 'PRIVATE_KEY_LEAK',
+          severity: 'HIGH', // Downgraded from CRITICAL
+          title: 'Possible Wallet Drain Detected',
+          description: `${data.count} different assets were sent to the same unknown address (${destination.slice(0, 10)}...) within ${Math.ceil(timeSpan / 60)} minutes. Your wallet balance is now nearly zero. Review these transactions.`,
           technicalDetails: `Destination: ${destination}, Time span: ${Math.ceil(timeSpan / 60)} minutes, Assets: ${Array.from(data.types).join(', ')}`,
           detectedAt: new Date().toISOString(),
           relatedAddresses: [destination],
           relatedTransactions: data.hashes.slice(0, 10),
-          ongoingRisk: isCurrentlyEmpty,
+          ongoingRisk: false, // Changed to false - need more evidence
         };
       }
 
-      if (data.count >= 5 && isRapid) {
-        // SUSPICIOUS: Many transfers to same address quickly
+      // PATTERN 3: Many transfers to same UNKNOWN address quickly
+      // Require more transfers to trigger (8+)
+      if (data.count >= 8 && isRapid) {
         return {
           id: `suspicious-outflow-${Date.now()}`,
           type: 'WALLET_DRAINER',
-          severity: 'HIGH',
-          title: 'Rapid Asset Outflow Detected',
-          description: `${data.count} transfers to the same address (${destination.slice(0, 10)}...) within a short time period. Review these transactions carefully.`,
+          severity: 'MEDIUM', // Downgraded
+          title: 'Unusual Asset Outflow Detected',
+          description: `${data.count} transfers to the same unknown address (${destination.slice(0, 10)}...) within a short time period. Review these transactions.`,
           technicalDetails: `Destination: ${destination}, Transfers: ${data.count}`,
           detectedAt: new Date().toISOString(),
           relatedAddresses: [destination],
@@ -409,42 +463,11 @@ export class EVMAnalyzer {
       }
     }
 
-    // PATTERN 4: Check if wallet was funded and is now empty (general drain indicator)
-    if (isCurrentlyEmpty && transactions.length > 5) {
-      // Calculate total received
-      let totalReceived = BigInt(0);
-      for (const tx of transactions) {
-        if (!tx?.to) continue;
-        if (tx.to.toLowerCase() === userAddress) {
-          totalReceived += BigInt(tx.value || '0');
-        }
-      }
-
-      // If wallet received significant funds but is now empty
-      if (totalReceived > BigInt('100000000000000000')) { // > 0.1 ETH received
-        // Find the main destination
-        const sortedDests = Object.entries(destinationCounts)
-          .filter(([addr]) => !isLegitimateContract(addr))
-          .sort((a, b) => b[1].count - a[1].count);
-
-        if (sortedDests.length > 0) {
-          const [topDest, topData] = sortedDests[0];
-          
-          return {
-            id: `wallet-emptied-${Date.now()}`,
-            type: 'WALLET_DRAINER',
-            severity: 'HIGH',
-            title: 'Wallet Has Been Emptied',
-            description: `This wallet received ${ethers.formatEther(totalReceived)} ETH but is now nearly empty. Most assets were sent to ${topDest.slice(0, 10)}...`,
-            technicalDetails: `Primary destination: ${topDest}, Transfers: ${topData.count}`,
-            detectedAt: new Date().toISOString(),
-            relatedAddresses: [topDest],
-            relatedTransactions: topData.hashes.slice(0, 10),
-            ongoingRisk: false,
-          };
-        }
-      }
-    }
+    // REMOVED: "Wallet emptied" pattern - too many false positives
+    // Users often empty wallets intentionally when:
+    // - Moving to new wallet
+    // - Depositing to exchange
+    // - Consolidating funds
 
     return null;
   }
@@ -459,11 +482,21 @@ export class EVMAnalyzer {
     currentBalance: string,
     userAddress: string
   ): DetectedThreat | null {
-    // Sweeper bot pattern:
-    // 1. Funds come IN
-    // 2. Within seconds/minutes, funds go OUT to same address
-    // 3. This happens multiple times
-    // 4. Wallet balance stays near zero
+    // ============================================
+    // CRITICAL FALSE POSITIVE PREVENTION
+    // ============================================
+    // A wallet is NOT a sweeper bot victim if outgoing funds go to:
+    // - Safe contracts (OpenSea, Uniswap, Aave, Lido, etc.)
+    // - Known exchanges (Binance, Coinbase, Kraken, etc.)
+    // - DeFi protocols, NFT marketplaces, bridges
+    // - ENS contracts
+    // 
+    // Quick outflows are NORMAL user behavior when:
+    // - User is swapping tokens on DEX
+    // - User is buying NFTs
+    // - User is depositing to exchange
+    // - User is bridging funds
+    // - User is staking
 
     if (transactions.length < 4) return null;
 
@@ -475,8 +508,63 @@ export class EVMAnalyzer {
       balanceWei = BigInt(0);
     }
 
+    // ============================================
+    // HELPER: Check if destination is a legitimate user-initiated destination
+    // ============================================
+    const isLegitimateDestination = (address: string, methodId?: string): boolean => {
+      const normalized = address.toLowerCase();
+      
+      // Check safe contracts (comprehensive allowlist)
+      if (isSafeContract(normalized)) return true;
+      
+      // Check DeFi protocols
+      if (isDeFiProtocol(normalized)) return true;
+      
+      // Check NFT marketplaces
+      if (isNFTMarketplace(normalized)) return true;
+      
+      // Check NFT mint contracts
+      if (isNFTMintContract(normalized)) return true;
+      
+      // Check ENS contracts
+      if (isENSContract(normalized)) return true;
+      
+      // Check infrastructure contracts
+      if (isInfrastructureContract(normalized)) return true;
+      
+      // Check exchange hot wallets
+      if (EXCHANGE_HOT_WALLETS.has(normalized)) return true;
+      
+      // Check legacy legitimate contracts
+      if (isLegitimateContract(normalized)) return true;
+      
+      // Check if method indicates user action (swap, mint, deposit, stake)
+      if (methodId) {
+        const userActionMethods = new Set([
+          '0x7ff36ab5', // swapExactETHForTokens
+          '0x38ed1739', // swapExactTokensForTokens
+          '0x18cbafe5', // swapExactTokensForETH
+          '0x04e45aaf', // exactInputSingle (Uniswap V3)
+          '0xb858183f', // exactInput (Uniswap V3)
+          '0x472b43f3', // swapExactTokensForTokens (Universal)
+          '0xd0e30db0', // deposit()
+          '0xb6b55f25', // deposit(uint256)
+          '0xa694fc3a', // stake(uint256)
+          '0xe8eda9df', // deposit (Aave)
+          '0x1249c58b', // mint()
+          '0xa0712d68', // mint(uint256)
+          '0x40c10f19', // mint(address,uint256)
+          '0xfb0f3ee1', // fulfillBasicOrder (Seaport)
+          '0x87201b41', // fulfillOrder (Seaport)
+        ]);
+        if (userActionMethods.has(methodId.toLowerCase().slice(0, 10))) return true;
+      }
+      
+      return false;
+    };
+
     // Build timeline of in/out transactions
-    const timeline: { type: 'in' | 'out'; to: string; from: string; value: bigint; timestamp: number; hash: string }[] = [];
+    const timeline: { type: 'in' | 'out'; to: string; from: string; value: bigint; timestamp: number; hash: string; methodId?: string }[] = [];
 
     for (const tx of transactions) {
       if (!tx?.from || !tx?.to || !tx?.hash) continue;
@@ -487,40 +575,51 @@ export class EVMAnalyzer {
         // Incoming
         timeline.push({ type: 'in', to: tx.to, from: tx.from.toLowerCase(), value, timestamp: tx.timestamp, hash: tx.hash });
       } else if (tx.from.toLowerCase() === userAddress) {
-        // Outgoing
-        timeline.push({ type: 'out', to: tx.to.toLowerCase(), from: tx.from, value, timestamp: tx.timestamp, hash: tx.hash });
+        // Outgoing - include methodId for user action detection
+        timeline.push({ type: 'out', to: tx.to.toLowerCase(), from: tx.from, value, timestamp: tx.timestamp, hash: tx.hash, methodId: tx.methodId });
       }
     }
 
     // Sort by timestamp
     timeline.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Detect sweep pattern: incoming followed by outgoing within 60 minutes to same address
-    // IMPROVED: Uses confidence scoring based on speed
+    // ============================================
+    // FIRST: Check if ALL outgoing transactions go to legitimate destinations
+    // If yes, this is NOT a sweeper victim - it's normal user activity
+    // ============================================
+    const outgoingTxs = timeline.filter(t => t.type === 'out');
+    const legitimateOutgoingCount = outgoingTxs.filter(t => isLegitimateDestination(t.to, t.methodId)).length;
+    const legitimateRatio = outgoingTxs.length > 0 ? legitimateOutgoingCount / outgoingTxs.length : 1;
+    
+    // If > 70% of outgoing transactions go to legitimate destinations, NOT a sweeper victim
+    if (legitimateRatio > 0.7) {
+      console.log(`[detectSweeperBot] ${userAddress}: ${(legitimateRatio * 100).toFixed(0)}% outgoing to legitimate destinations - NOT a sweeper victim`);
+      return null;
+    }
+
+    // Detect sweep pattern: incoming followed by outgoing within 60 minutes to UNKNOWN address
     const sweepEvents: { inTx: string; outTx: string; sweeperAddress: string; timeDelta: number; confidence?: number }[] = [];
-    const sweeperAddresses: Record<string, number> = {}; // Now stores weighted confidence scores
+    const sweeperAddresses: Record<string, number> = {};
 
     for (let i = 0; i < timeline.length - 1; i++) {
       const current = timeline[i];
       
       if (current.type !== 'in') continue;
 
-      // Look for outgoing transaction shortly after
-      // IMPROVED: Expanded window from 10 minutes to 60 minutes with confidence decay
       for (let j = i + 1; j < timeline.length && j <= i + 10; j++) {
         const next = timeline[j];
         
         if (next.type !== 'out') continue;
         
-        const timeDelta = next.timestamp - current.timestamp;
+        // CRITICAL: Skip if destination is legitimate
+        if (isLegitimateDestination(next.to, next.methodId)) {
+          continue; // This is normal user activity (swap, deposit, mint, etc.)
+        }
         
-        // EXPANDED: Up to 60 minutes (3600 seconds) with scoring
-        // Faster sweeps = higher confidence
+        const timeDelta = next.timestamp - current.timestamp;
         const MAX_SWEEP_WINDOW = 3600; // 60 minutes
         
         if (timeDelta >= 0 && timeDelta <= MAX_SWEEP_WINDOW) {
-          // Calculate confidence score based on speed
-          // 0-60 seconds = 1.0, 60 minutes = 0.3
           const confidenceScore = Math.max(0.3, 1 - (timeDelta / MAX_SWEEP_WINDOW) * 0.7);
           
           sweepEvents.push({
@@ -528,28 +627,34 @@ export class EVMAnalyzer {
             outTx: next.hash,
             sweeperAddress: next.to,
             timeDelta,
-            confidence: confidenceScore, // Track confidence
+            confidence: confidenceScore,
           });
           
-          // Weight by confidence
           sweeperAddresses[next.to] = (sweeperAddresses[next.to] || 0) + confidenceScore;
           break;
         }
       }
     }
 
-    // IMPROVED: Use confidence-weighted threshold
-    // A score of 2.0+ indicates high-confidence sweeper pattern
-    // This accounts for time decay - slower sweeps need more events to trigger
-    const confirmedSweeper = Object.entries(sweeperAddresses).find(([_, score]) => score >= 1.5);
+    // STRICTER: Require higher score (2.5+) and multiple sweep events to UNKNOWN addresses
+    const confirmedSweeper = Object.entries(sweeperAddresses).find(([addr, score]) => {
+      // Must have score >= 2.5 AND destination must NOT be legitimate
+      return score >= 2.5 && !isLegitimateDestination(addr);
+    });
 
-    if (confirmedSweeper && !isLegitimateContract(confirmedSweeper[0])) {
+    if (confirmedSweeper) {
       const [sweeperAddress, confidenceScore] = confirmedSweeper;
-      const isCurrentlyEmpty = balanceWei < BigInt('1000000000000000'); // < 0.001 ETH
+      const isCurrentlyEmpty = balanceWei < BigInt('1000000000000000');
 
-      // Calculate how fast the sweeps happen on average
       const relevantEvents = sweepEvents.filter(e => e.sweeperAddress === sweeperAddress);
       const sweepCount = relevantEvents.length;
+      
+      // ADDITIONAL CHECK: Must have at least 3 sweep events to be confident
+      if (sweepCount < 3) {
+        console.log(`[detectSweeperBot] ${userAddress}: Only ${sweepCount} sweep events - insufficient for sweeper classification`);
+        return null;
+      }
+      
       const avgTimeDelta = relevantEvents.reduce((sum, e) => sum + e.timeDelta, 0) / sweepCount;
 
       return {
@@ -572,8 +677,8 @@ export class EVMAnalyzer {
       };
     }
 
-    // Check for single large sweep (all funds out quickly after large incoming)
-    const largeIncoming = timeline.filter(t => t.type === 'in' && t.value > BigInt('100000000000000000')); // > 0.1 ETH
+    // Check for single large sweep - ONLY if destination is NOT legitimate
+    const largeIncoming = timeline.filter(t => t.type === 'in' && t.value > BigInt('100000000000000000'));
     
     for (const incoming of largeIncoming) {
       const incomingIdx = timeline.indexOf(incoming);
@@ -582,17 +687,22 @@ export class EVMAnalyzer {
         const outgoing = timeline[j];
         if (outgoing.type !== 'out') continue;
         
+        // CRITICAL: Skip if destination is legitimate
+        if (isLegitimateDestination(outgoing.to, outgoing.methodId)) {
+          continue; // User sending to DEX/exchange/etc. is NORMAL
+        }
+        
         const timeDelta = outgoing.timestamp - incoming.timestamp;
         const valueRatio = Number(outgoing.value) / Number(incoming.value);
         
-        // If >80% of incoming value was sent out within 30 minutes
-        if (timeDelta >= 0 && timeDelta <= 1800 && valueRatio > 0.8 && !isLegitimateContract(outgoing.to)) {
+        // Stricter: Only flag if >90% value sent out within 10 minutes to UNKNOWN address
+        if (timeDelta >= 0 && timeDelta <= 600 && valueRatio > 0.9) {
           return {
             id: `rapid-sweep-${Date.now()}`,
             type: 'PRIVATE_KEY_LEAK',
             severity: 'CRITICAL',
             title: '⚠️ Rapid Fund Sweep Detected',
-            description: `${ethers.formatEther(incoming.value)} ETH was received and ${(valueRatio * 100).toFixed(1)}% was immediately sent out within ${Math.round(timeDelta / 60)} minutes. This pattern strongly suggests your private key is compromised.`,
+            description: `${ethers.formatEther(incoming.value)} ETH was received and ${(valueRatio * 100).toFixed(1)}% was immediately sent out within ${Math.round(timeDelta / 60)} minutes to an unknown address. This pattern strongly suggests your private key is compromised.`,
             technicalDetails: `Sweeper Address: ${outgoing.to}\nIncoming TX: ${incoming.hash}\nOutgoing TX: ${outgoing.hash}\nTime Delta: ${timeDelta}s`,
             detectedAt: new Date().toISOString(),
             relatedAddresses: [outgoing.to],

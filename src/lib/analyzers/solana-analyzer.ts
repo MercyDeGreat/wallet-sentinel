@@ -3,6 +3,12 @@
 // ============================================
 // Handles security analysis for Solana blockchain.
 // All operations are READ-ONLY.
+//
+// CRITICAL: Solana compromise detection has LIMITATIONS:
+// - Solana compromises are often OFF-CHAIN (phishing, session hijacks)
+// - These attacks may NOT leave on-chain artifacts
+// - Absence of evidence is NOT proof of safety
+// - NEVER mark Solana wallets as "Fully Safe" or "Clean"
 
 import {
   Connection,
@@ -21,6 +27,10 @@ import {
   RecoveryPlan,
   RecoveryStep,
   SecurityStatus,
+  ChainAwareSecurityLabel,
+  ChainAnalysisMetadata,
+  SOLANA_SECURITY_DISCLAIMER,
+  CHAIN_ANALYSIS_METADATA,
 } from '@/types';
 import { CHAIN_RPC_CONFIG, SOLANA_MALICIOUS_PROGRAMS } from '../detection/malicious-database';
 
@@ -92,6 +102,10 @@ export class SolanaAnalyzer {
     const riskScore = this.calculateRiskScore(threats, approvals);
     const securityStatus = this.determineSecurityStatus(riskScore, threats);
 
+    // Generate chain-aware status (Solana-specific)
+    const chainAwareStatus = this.generateChainAwareStatus(securityStatus, threats);
+    const analysisMetadata = this.getAnalysisMetadata();
+
     // Generate suspicious transactions list
     const suspiciousTransactions = this.identifySuspiciousTransactions(transactions, threats);
 
@@ -109,15 +123,16 @@ export class SolanaAnalyzer {
       role: threats.length === 0 ? 'UNKNOWN' : 'VICTIM',
       confidence: 'MEDIUM',
       evidence: threats.length === 0 
-        ? [{ type: 'NORMAL_ACTIVITY', description: 'No malicious activity detected', weight: 'HIGH' as const }]
+        ? [{ type: 'NORMAL_ACTIVITY', description: 'No on-chain malicious activity detected', weight: 'HIGH' as const }]
         : [{ type: 'OUTBOUND_TO_DRAINER', description: 'Potential threat detected', weight: 'MEDIUM' as const }],
       isMalicious: false,
       isInfrastructure: false,
       isServiceFeeReceiver: false,
     };
     
+    // Updated classification reason for Solana
     const classificationReason = threats.length === 0
-      ? 'No malicious activity detected. This wallet appears to be operating normally.'
+      ? 'No on-chain malicious activity detected. Note: Solana compromises may occur off-chain and leave no trace.'
       : 'Potential security threats detected. Review the identified risks.';
     
     const riskLevel: import('@/types').RiskLevel = 
@@ -133,6 +148,11 @@ export class SolanaAnalyzer {
       // Core security assessment
       securityStatus,
       riskScore,
+      
+      // Chain-aware status (NEW - Solana specific)
+      chainAwareStatus,
+      analysisMetadata,
+      chainDisclaimer: SOLANA_SECURITY_DISCLAIMER,
       
       // Classification (prevents false positives)
       classification,
@@ -420,9 +440,65 @@ export class SolanaAnalyzer {
     const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
     const hasCritical = safeThreats.some((t) => t?.severity === 'CRITICAL' && t?.ongoingRisk);
 
+    // IMPORTANT: For Solana, we still return 'SAFE' as the status type,
+    // but the UI will display it differently using chainAwareStatus
     if (hasCritical || riskScore >= 70) return 'COMPROMISED';
     if (riskScore >= 30 || safeThreats.length > 0) return 'AT_RISK';
     return 'SAFE';
+  }
+
+  /**
+   * Generate chain-aware security label for Solana.
+   * CRITICAL: Solana should NEVER be labeled as "Fully Safe" or "Clean"
+   * because off-chain compromises may not leave on-chain traces.
+   */
+  private generateChainAwareStatus(
+    securityStatus: SecurityStatus,
+    threats: DetectedThreat[]
+  ): ChainAwareSecurityLabel {
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    
+    switch (securityStatus) {
+      case 'COMPROMISED':
+        return {
+          status: 'COMPROMISED',
+          displayLabel: 'On-Chain Compromise Detected',
+          shortLabel: 'COMPROMISED',
+          description: 'Strong on-chain evidence of wallet compromise has been detected.',
+          isDefinitiveSafe: false,
+        };
+      
+      case 'AT_RISK':
+        return {
+          status: 'AT_RISK',
+          displayLabel: 'On-Chain Risk Indicators Found',
+          shortLabel: 'AT RISK',
+          description: `${safeThreats.length} potential on-chain security concern${safeThreats.length !== 1 ? 's' : ''} detected.`,
+          disclaimer: SOLANA_SECURITY_DISCLAIMER,
+          isDefinitiveSafe: false,
+        };
+      
+      case 'SAFE':
+      default:
+        // CRITICAL: Solana "SAFE" status must be reframed
+        // Absence of on-chain evidence ≠ wallet is safe
+        return {
+          status: 'NO_ONCHAIN_RISK_DETECTED',
+          displayLabel: 'No On-Chain Risk Detected',
+          shortLabel: 'NO RISK DETECTED',
+          description: 'No detectable on-chain security threats found. ' +
+                       'This does NOT guarantee the wallet is safe from all threats.',
+          disclaimer: SOLANA_SECURITY_DISCLAIMER,
+          isDefinitiveSafe: false, // NEVER true for Solana
+        };
+    }
+  }
+
+  /**
+   * Get analysis metadata for Solana chain.
+   */
+  private getAnalysisMetadata(): ChainAnalysisMetadata {
+    return CHAIN_ANALYSIS_METADATA.solana;
   }
 
   private identifySuspiciousTransactions(
@@ -586,26 +662,52 @@ export class SolanaAnalyzer {
     threats: DetectedThreat[],
     approvals: TokenApproval[]
   ): string {
+    // CRITICAL: Solana summaries must NOT claim the wallet is "safe"
+    // Absence of on-chain evidence ≠ absence of compromise
+    
     if (status === 'SAFE') {
-      return 'No significant security threats detected on your Solana wallet. Continue practicing safe wallet hygiene.';
+      // Changed from "No significant security threats detected" to emphasize limitations
+      return 'No detectable on-chain security threats found on your Solana wallet. ' +
+             'Note: Many Solana attacks occur off-chain and may not leave on-chain traces. ' +
+             'Continue practicing safe wallet hygiene.';
     }
 
     if (status === 'AT_RISK') {
-      return `${threats.length} potential security concern${threats.length !== 1 ? 's' : ''} detected. Review the findings and take preventive action.`;
+      return `${threats.length} potential on-chain security concern${threats.length !== 1 ? 's' : ''} detected. ` +
+             'Review the findings and take preventive action.';
     }
 
-    return `URGENT: Critical security threats detected on your Solana wallet. Immediate action required to protect remaining assets.`;
+    return `URGENT: Critical on-chain security threats detected on your Solana wallet. ` +
+           'Immediate action required to protect remaining assets.';
   }
 
   private generateEducationalContent(threats: DetectedThreat[]) {
+    const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+    const hasThreats = safeThreats.length > 0;
+    
     return {
       attackExplanation: {
-        whatHappened: 'Suspicious activity was detected on your Solana wallet.',
-        howItWorks: 'Solana-specific attacks can include malicious program interactions, token delegation abuse, and phishing airdrops.',
-        ongoingDamage: 'If delegations or program authorities are still active, your assets may still be at risk.',
-        recoverableInfo: 'Transfer remaining assets to a fresh wallet and revoke all delegations.',
+        whatHappened: hasThreats 
+          ? 'On-chain suspicious activity was detected on your Solana wallet.'
+          : 'No on-chain threats were detected, but this does not guarantee your wallet is completely safe.',
+        howItWorks: 'Solana-specific attacks can include:\n' +
+          '• On-chain: Malicious program interactions, token delegation abuse, phishing airdrops\n' +
+          '• Off-chain: Phishing signatures, session/cookie hijacks, compromised browser extensions\n\n' +
+          'IMPORTANT: Off-chain attacks often leave NO on-chain trace and cannot be detected by this analysis.',
+        ongoingDamage: hasThreats 
+          ? 'If delegations or program authorities are still active, your assets may still be at risk.'
+          : 'Even without detected on-chain threats, your wallet may have been compromised through off-chain means ' +
+            '(phishing, session hijack). If you suspect compromise, treat the wallet as unsafe.',
+        recoverableInfo: 'If you suspect any compromise: Transfer remaining assets to a fresh wallet immediately ' +
+          'and revoke all delegations. Do not reuse seed phrases or private keys.',
       },
       preventionTips: [
+        {
+          title: 'Understand Solana Detection Limitations',
+          description: 'This analysis only detects on-chain threats. Phishing signatures and session hijacks ' +
+                       'may not leave any on-chain trace. Always verify transactions independently.',
+          importance: 'CRITICAL' as RiskLevel,
+        },
         {
           title: 'Verify Program IDs',
           description: 'Always verify the program ID before signing Solana transactions. Use official documentation.',
@@ -614,11 +716,21 @@ export class SolanaAnalyzer {
         {
           title: 'Be Cautious of Airdrops',
           description: 'Do not interact with unsolicited token airdrops. They may be phishing attempts.',
-          importance: 'MEDIUM' as RiskLevel,
+          importance: 'HIGH' as RiskLevel,
         },
         {
           title: 'Review Token Account Delegations',
           description: 'Regularly check if any of your token accounts have active delegations.',
+          importance: 'MEDIUM' as RiskLevel,
+        },
+        {
+          title: 'Use Trusted Applications Only',
+          description: 'Only connect your wallet to verified dApps. Revoke access from applications you no longer use.',
+          importance: 'HIGH' as RiskLevel,
+        },
+        {
+          title: 'Monitor Browser Extensions',
+          description: 'Malicious browser extensions can steal session data. Only use trusted extensions and keep them updated.',
           importance: 'MEDIUM' as RiskLevel,
         },
       ],
@@ -628,6 +740,8 @@ export class SolanaAnalyzer {
         { id: '3', category: 'Transactions', item: 'Verify program IDs before signing', completed: false, chainSpecific: ['solana'] as Chain[] },
         { id: '4', category: 'Tokens', item: 'Close unused token accounts', completed: false, chainSpecific: ['solana'] as Chain[] },
         { id: '5', category: 'Security', item: 'Avoid clicking airdrop links', completed: false },
+        { id: '6', category: 'Security', item: 'Review and revoke unnecessary app connections', completed: false, chainSpecific: ['solana'] as Chain[] },
+        { id: '7', category: 'Security', item: 'Understand that "no threats detected" ≠ "safe" for Solana', completed: false, chainSpecific: ['solana'] as Chain[] },
       ],
     };
   }

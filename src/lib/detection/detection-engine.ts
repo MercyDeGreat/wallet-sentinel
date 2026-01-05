@@ -4,6 +4,19 @@
 // This is the main security analysis engine that coordinates
 // threat detection across all supported chains.
 // All operations are READ-ONLY and defensive.
+//
+// CRITICAL FALSE POSITIVE PREVENTION:
+// 1. Contracts are CLASSIFIED before threat labels are applied
+// 2. Safe contracts (OpenSea, ENS, Uniswap, etc.) are NEVER flagged
+// 3. Sweeper/drainer detection is BEHAVIOR-BASED, not interaction-based
+// 4. Confidence < 90% = no CRITICAL alerts
+// 5. Normal user behavior is explicitly classified
+// 6. Each transaction is explicitly labeled (LEGITIMATE vs SUSPICIOUS)
+// 7. Exchange deposits/withdrawals are ALWAYS legitimate
+// 8. NFT mints, presales, and approved contracts are whitelisted
+//
+// RULE: It is better to MISS a threat than to falsely accuse.
+// PRINCIPLE: Treat all transactions as POTENTIALLY NORMAL unless proven malicious.
 
 import {
   AttackType,
@@ -14,13 +27,44 @@ import {
   TokenApproval,
   SuspiciousTransaction,
   WalletAnalysisResult,
+  WalletRole,
 } from '@/types';
 import {
   isMaliciousAddress,
   isInfiniteApproval,
   DRAINER_PATTERNS,
   getAttackTypeFromPattern,
+  isLegitimateContract,
 } from './malicious-database';
+import {
+  isSafeContract,
+  checkAddressSafety,
+  SafeContract,
+} from './safe-contracts';
+import {
+  classifyContract,
+  ContractClassification,
+  shouldExcludeFromMaliciousFlagging,
+  getSafetyExplanation,
+} from './contract-classifier';
+import {
+  analyzeWalletBehavior,
+  BehaviorAnalysisResult,
+  calculateSweeperBotScore,
+  TransactionForAnalysis,
+  UserBehaviorClassification,
+} from './behavior-analyzer';
+import { isKnownDrainer, getDrainerType } from './drainer-addresses';
+import {
+  labelTransaction,
+  labelTransactions,
+  generateRiskReport,
+  LabeledTransaction,
+  TransactionSummary,
+  WalletRiskReport,
+  TransactionInput,
+  EXCHANGE_HOT_WALLETS,
+} from './transaction-labeler';
 
 // ============================================
 // RISK SCORING SYSTEM
@@ -33,6 +77,9 @@ interface RiskFactors {
   recentDrainActivity: number;
   highRiskApprovals: number;
   unknownContractInteractions: number;
+  // NEW: Behavioral risk factors
+  behaviorRiskScore: number;
+  legitimateActivityScore: number;
 }
 
 export function calculateRiskScore(factors: RiskFactors): number {
@@ -50,22 +97,51 @@ export function calculateRiskScore(factors: RiskFactors): number {
   score += factors.highRiskApprovals * 20;
   // Unknown contracts add minor risk
   score += factors.unknownContractInteractions * 5;
+  
+  // NEW: Add behavioral risk score
+  score += factors.behaviorRiskScore;
+  
+  // NEW: SUBTRACT legitimate activity (reduces false positives)
+  score -= factors.legitimateActivityScore;
 
   // Clamp to 0-100
   return Math.min(100, Math.max(0, score));
 }
 
-export function determineSecurityStatus(riskScore: number, threats: DetectedThreat[]): SecurityStatus {
+export function determineSecurityStatus(
+  riskScore: number, 
+  threats: DetectedThreat[],
+  behaviorAnalysis?: BehaviorAnalysisResult
+): SecurityStatus {
+  // NEW: Check behavior analysis first
+  if (behaviorAnalysis) {
+    // If behavior shows NORMAL_USER or POWER_USER, don't flag as compromised
+    if (behaviorAnalysis.classification === 'NORMAL_USER' || 
+        behaviorAnalysis.classification === 'POWER_USER') {
+      if (riskScore < 50) {
+        return 'SAFE';
+      }
+      return 'AT_RISK';
+    }
+    
+    // Only show COMPROMISED if confidence is high
+    if (behaviorAnalysis.isDefinitelyMalicious && behaviorAnalysis.confidence >= 90) {
+      return 'COMPROMISED';
+    }
+  }
+
   // Check for critical active threats
   const hasCriticalThreat = threats.some(
     (t) => t.severity === 'CRITICAL' && t.ongoingRisk
   );
 
-  if (hasCriticalThreat || riskScore >= 70) {
+  // MODIFIED: Raise threshold for COMPROMISED status
+  if (hasCriticalThreat && riskScore >= 80) {
     return 'COMPROMISED';
   }
 
-  if (riskScore >= 30 || threats.length > 0) {
+  // MODIFIED: More conservative AT_RISK threshold
+  if (riskScore >= 50 || threats.length > 2) {
     return 'AT_RISK';
   }
 
@@ -97,30 +173,123 @@ export interface ApprovalData {
   transactionHash: string;
 }
 
-export function detectDrainerPatterns(
+/**
+ * Main threat detection function.
+ * NOW includes contract classification to prevent false positives.
+ */
+export async function detectDrainerPatterns(
   transactions: TransactionData[],
-  chain: Chain
-): DetectedThreat[] {
+  chain: Chain,
+  walletAddress: string
+): Promise<{
+  threats: DetectedThreat[];
+  behaviorAnalysis: BehaviorAnalysisResult;
+  excludedFromFlagging: string[];
+}> {
   const threats: DetectedThreat[] = [];
+  const excludedFromFlagging: string[] = [];
   
   // Safe array guard
   const safeTxs = Array.isArray(transactions) ? transactions : [];
-  if (safeTxs.length === 0) return threats;
+  if (safeTxs.length === 0) {
+    return {
+      threats: [],
+      behaviorAnalysis: {
+        classification: 'NEW_WALLET',
+        walletRole: 'UNKNOWN',
+        confidence: 10,
+        isDefinitelyMalicious: false,
+        isProbablyMalicious: false,
+        showCriticalAlert: false,
+        explanation: 'No transaction history available.',
+        evidence: [],
+        riskScore: 0,
+        riskLevel: 'LOW',
+        threats: [],
+        detectedIntents: [],
+        explainability: {
+          classificationReason: 'No transaction history available for analysis.',
+          behavioralTriggers: [],
+          userIntentDetected: [],
+          protocolInteractionDetected: [],
+          sweeperRuledOutReasons: ['No transactions to analyze'],
+          failedSweeperCriteria: [],
+          passedSweeperCriteria: [],
+        },
+      },
+      excludedFromFlagging: [],
+    };
+  }
 
+  // ============================================
+  // STEP 1: Classify all interacted contracts
+  // ============================================
+  const contractClassifications = new Map<string, ContractClassification>();
+  const allAddresses = new Set<string>();
+  
+  for (const tx of safeTxs) {
+    if (tx.to) allAddresses.add(tx.to.toLowerCase());
+    if (tx.from) allAddresses.add(tx.from.toLowerCase());
+  }
+  
+  for (const addr of allAddresses) {
+    const classification = await classifyContract(addr, chain);
+    contractClassifications.set(addr, classification);
+    
+    // Track excluded addresses
+    if (shouldExcludeFromMaliciousFlagging(classification)) {
+      excludedFromFlagging.push(addr);
+    }
+  }
+
+  // ============================================
+  // STEP 2: Run behavioral analysis
+  // ============================================
+  const normalizedWallet = walletAddress.toLowerCase();
+  const txsForAnalysis: TransactionForAnalysis[] = safeTxs.map(tx => ({
+    hash: tx.hash,
+    from: tx.from,
+    to: tx.to,
+    value: tx.value,
+    timestamp: tx.timestamp,
+    methodId: tx.methodId,
+    isOutbound: tx.from?.toLowerCase() === normalizedWallet,
+    isInbound: tx.to?.toLowerCase() === normalizedWallet,
+    blockNumber: tx.blockNumber,
+  }));
+  
+  const behaviorAnalysis = await analyzeWalletBehavior(
+    walletAddress,
+    chain,
+    txsForAnalysis
+  );
+
+  // If behavioral analysis says normal/power user, be very conservative
+  const isLikelyNormalUser = 
+    behaviorAnalysis.classification === 'NORMAL_USER' ||
+    behaviorAnalysis.classification === 'POWER_USER';
+
+  // ============================================
+  // STEP 3: Pattern detection (with exclusions)
+  // ============================================
+  
   // Pattern 1: Rapid outflow detection
-  const rapidOutflow = detectRapidOutflow(safeTxs);
-  if (rapidOutflow) {
-    threats.push(rapidOutflow);
+  // MODIFIED: Skip if user is likely normal
+  if (!isLikelyNormalUser) {
+    const rapidOutflow = detectRapidOutflow(safeTxs, contractClassifications);
+    if (rapidOutflow) {
+      threats.push(rapidOutflow);
+    }
   }
 
   // Pattern 2: Approval followed by drain
-  const approvalDrain = detectApprovalDrain(safeTxs);
+  const approvalDrain = detectApprovalDrain(safeTxs, contractClassifications);
   if (approvalDrain) {
     threats.push(approvalDrain);
   }
 
   // Pattern 3: Known malicious contract interaction
-  const maliciousInteractions = detectMaliciousInteractions(safeTxs, chain);
+  const maliciousInteractions = detectMaliciousInteractions(safeTxs, chain, contractClassifications);
   threats.push(...maliciousInteractions);
 
   // Pattern 4: Sandwich attack detection
@@ -129,10 +298,22 @@ export function detectDrainerPatterns(
     threats.push(sandwichAttack);
   }
 
-  return threats;
+  // Add behavioral threats
+  if (behaviorAnalysis.threats.length > 0) {
+    threats.push(...behaviorAnalysis.threats);
+  }
+
+  return {
+    threats,
+    behaviorAnalysis,
+    excludedFromFlagging,
+  };
 }
 
-function detectRapidOutflow(transactions: TransactionData[]): DetectedThreat | null {
+function detectRapidOutflow(
+  transactions: TransactionData[],
+  contractClassifications: Map<string, ContractClassification>
+): DetectedThreat | null {
   // Safe array guard
   const safeTxs = Array.isArray(transactions) ? transactions.filter(tx => tx != null) : [];
   if (safeTxs.length === 0) return null;
@@ -162,17 +343,29 @@ function detectRapidOutflow(transactions: TransactionData[]): DetectedThreat | n
     );
 
     if (outboundTxs.length >= threshold) {
+      // NEW: Check if ALL destinations are safe contracts
+      const destinations = outboundTxs.map(tx => tx.to?.toLowerCase()).filter(Boolean);
+      const allSafe = destinations.every(dest => {
+        const classification = contractClassifications.get(dest as string);
+        return classification && shouldExcludeFromMaliciousFlagging(classification);
+      });
+      
+      if (allSafe) {
+        // All going to safe contracts (DEX, bridge, etc.) = NOT suspicious
+        return null;
+      }
+      
       return {
         id: `rapid-outflow-${Date.now()}`,
         type: 'WALLET_DRAINER',
-        severity: 'CRITICAL',
+        severity: 'HIGH', // MODIFIED: Downgraded from CRITICAL
         title: 'Rapid Asset Outflow Detected',
-        description: `${outboundTxs.length} outbound transactions detected within ${windowMinutes} minutes. This pattern is consistent with wallet drainer activity.`,
+        description: `${outboundTxs.length} outbound transactions detected within ${windowMinutes} minutes. This pattern may indicate unusual activity.`,
         technicalDetails: `Transactions: ${outboundTxs.map((tx) => tx?.hash || 'unknown').join(', ')}`,
         detectedAt: new Date().toISOString(),
         relatedAddresses: [...new Set(outboundTxs.map((tx) => tx?.to).filter(Boolean) as string[])],
         relatedTransactions: outboundTxs.map((tx) => tx?.hash).filter(Boolean) as string[],
-        ongoingRisk: true,
+        ongoingRisk: false, // MODIFIED: Not necessarily ongoing
       };
     }
   }
@@ -180,7 +373,10 @@ function detectRapidOutflow(transactions: TransactionData[]): DetectedThreat | n
   return null;
 }
 
-function detectApprovalDrain(transactions: TransactionData[]): DetectedThreat | null {
+function detectApprovalDrain(
+  transactions: TransactionData[],
+  contractClassifications: Map<string, ContractClassification>
+): DetectedThreat | null {
   // Safe array guard
   const safeTxs = Array.isArray(transactions) ? transactions.filter(tx => tx != null) : [];
   if (safeTxs.length === 0) return null;
@@ -194,7 +390,13 @@ function detectApprovalDrain(transactions: TransactionData[]): DetectedThreat | 
   );
 
   for (const approval of approvals) {
-    if (!approval?.timestamp || !approval?.hash) continue;
+    if (!approval?.timestamp || !approval?.hash || !approval?.to) continue;
+    
+    // NEW: Skip if approval is to a safe contract
+    const spenderClassification = contractClassifications.get(approval.to.toLowerCase());
+    if (spenderClassification && shouldExcludeFromMaliciousFlagging(spenderClassification)) {
+      continue; // Approval to OpenSea, Uniswap, etc. is NORMAL
+    }
     
     // Look for transfers shortly after approval
     const windowSeconds = 300; // 5 minutes
@@ -208,17 +410,27 @@ function detectApprovalDrain(transactions: TransactionData[]): DetectedThreat | 
     );
 
     if (transfers.length > 0) {
+      // Check if the transfer destination is a safe contract
+      const allTransfersToSafe = transfers.every(tx => {
+        const destClassification = contractClassifications.get(tx.to?.toLowerCase() || '');
+        return destClassification && shouldExcludeFromMaliciousFlagging(destClassification);
+      });
+      
+      if (allTransfersToSafe) {
+        continue; // Transfer to safe contract = NORMAL (selling NFT, adding liquidity, etc.)
+      }
+      
       return {
         id: `approval-drain-${Date.now()}`,
         type: 'APPROVAL_HIJACK',
         severity: 'HIGH',
         title: 'Approval Abuse Detected',
-        description: 'An approval was granted and immediately used to transfer assets. This is a common drainer pattern.',
-        technicalDetails: `Approval TX: ${approval.hash}, Drain TXs: ${transfers.map((tx) => tx?.hash || 'unknown').join(', ')}`,
+        description: 'An approval was granted and used to transfer assets. Review if this was intentional.',
+        technicalDetails: `Approval TX: ${approval.hash}, Transfer TXs: ${transfers.map((tx) => tx?.hash || 'unknown').join(', ')}`,
         detectedAt: new Date().toISOString(),
         relatedAddresses: [approval.to, ...transfers.map((tx) => tx?.to)].filter(Boolean) as string[],
         relatedTransactions: [approval.hash, ...transfers.map((tx) => tx?.hash)].filter(Boolean) as string[],
-        ongoingRisk: true,
+        ongoingRisk: false, // MODIFIED: Need to verify
       };
     }
   }
@@ -228,7 +440,8 @@ function detectApprovalDrain(transactions: TransactionData[]): DetectedThreat | 
 
 function detectMaliciousInteractions(
   transactions: TransactionData[],
-  chain: Chain
+  chain: Chain,
+  contractClassifications: Map<string, ContractClassification>
 ): DetectedThreat[] {
   const threats: DetectedThreat[] = [];
   
@@ -238,8 +451,23 @@ function detectMaliciousInteractions(
   for (const tx of safeTxs) {
     if (!tx?.to || !tx?.hash) continue;
     
+    const normalizedTo = tx.to.toLowerCase();
+    
+    // NEW: Check classification first
+    const classification = contractClassifications.get(normalizedTo);
+    if (classification && shouldExcludeFromMaliciousFlagging(classification)) {
+      continue; // Safe contract - skip
+    }
+    
+    // Only check against confirmed malicious database
     const maliciousContract = isMaliciousAddress(tx.to, chain);
     if (maliciousContract) {
+      // Double-check it's not a false positive
+      if (isSafeContract(normalizedTo)) {
+        console.warn(`[Detection] Prevented false positive: ${normalizedTo} is in safe contracts`);
+        continue;
+      }
+      
       threats.push({
         id: `malicious-interaction-${tx.hash}`,
         type: maliciousContract.type,
@@ -288,7 +516,7 @@ function detectSandwichPattern(transactions: TransactionData[]): DetectedThreat 
       return {
         id: `sandwich-${Date.now()}`,
         type: 'MEV_SANDWICH_DRAIN',
-        severity: 'HIGH',
+        severity: 'MEDIUM', // MODIFIED: Downgraded - MEV is common
         title: 'MEV Sandwich Attack Detected',
         description: 'Your transaction was sandwiched by MEV bots, potentially causing value extraction.',
         technicalDetails: `Block: ${curr.blockNumber}, Sandwich by: ${prev.from}`,
@@ -313,6 +541,37 @@ export function analyzeApprovals(approvals: ApprovalData[], chain: Chain): Token
   
   return safeApprovals.map((approval) => {
     const isUnlimited = isInfiniteApproval(approval?.amount || '0');
+    
+    // NEW: Check if spender is a safe contract
+    const safeContract = isSafeContract(approval?.spender || '');
+    const legitimateLabel = isLegitimateContract(approval?.spender || '');
+    
+    // If spender is safe, it's not malicious
+    if (safeContract || legitimateLabel) {
+      return {
+        id: `approval-${approval.transactionHash}`,
+        token: {
+          address: approval.token,
+          symbol: approval.tokenSymbol,
+          name: approval.tokenName,
+          decimals: 18,
+          standard: 'ERC20',
+          verified: true,
+        },
+        spender: approval.spender,
+        spenderLabel: safeContract?.name || legitimateLabel || undefined,
+        amount: approval.amount,
+        isUnlimited,
+        riskLevel: isUnlimited ? 'MEDIUM' : 'LOW', // MODIFIED: Reduced risk for safe contracts
+        riskReason: isUnlimited 
+          ? `Unlimited approval to ${safeContract?.name || legitimateLabel || 'verified contract'}`
+          : undefined,
+        grantedAt: new Date(approval.timestamp * 1000).toISOString(),
+        isMalicious: false, // Safe contract = not malicious
+      };
+    }
+    
+    // Check if spender is malicious
     const isMalicious = approval?.spender ? isMaliciousAddress(approval.spender, chain) !== null : false;
 
     let riskLevel: RiskLevel = 'LOW';
@@ -351,7 +610,10 @@ export function analyzeApprovals(approvals: ApprovalData[], chain: Chain): Token
 // BEHAVIORAL INFERENCE
 // ============================================
 
-export function inferPrivateKeyCompromise(transactions: TransactionData[]): DetectedThreat | null {
+export function inferPrivateKeyCompromise(
+  transactions: TransactionData[],
+  contractClassifications?: Map<string, ContractClassification>
+): DetectedThreat | null {
   // Safe array guard
   const safeTxs = Array.isArray(transactions) ? transactions.filter(tx => tx != null) : [];
   if (safeTxs.length === 0) return null;
@@ -372,6 +634,21 @@ export function inferPrivateKeyCompromise(transactions: TransactionData[]): Dete
   const destinations = [...new Set(outboundTxs.map((tx) => tx?.to?.toLowerCase?.()).filter(Boolean) as string[])];
 
   if (destinations.length === 1 && outboundTxs.length >= 3) {
+    const singleDest = destinations[0];
+    
+    // NEW: Check if destination is a safe contract
+    if (contractClassifications) {
+      const destClassification = contractClassifications.get(singleDest);
+      if (destClassification && shouldExcludeFromMaliciousFlagging(destClassification)) {
+        return null; // All funds going to DEX/bridge/exchange is NORMAL
+      }
+    }
+    
+    // Also check static safe contracts
+    if (isSafeContract(singleDest) || isLegitimateContract(singleDest)) {
+      return null; // Going to known safe destination
+    }
+    
     // Check time clustering
     const timestamps = outboundTxs.map((tx) => tx?.timestamp || 0).filter(t => t > 0).sort((a, b) => a - b);
     if (timestamps.length < 2) return null;
@@ -383,14 +660,14 @@ export function inferPrivateKeyCompromise(transactions: TransactionData[]): Dete
       return {
         id: `key-compromise-${Date.now()}`,
         type: 'PRIVATE_KEY_LEAK',
-        severity: 'CRITICAL',
+        severity: 'HIGH', // MODIFIED: Downgraded from CRITICAL until confirmed
         title: 'Possible Private Key Compromise',
-        description: 'Multiple assets were transferred to a single address in a short timeframe. This pattern suggests your private key may have been compromised.',
-        technicalDetails: `All assets sent to: ${destinations[0]}, Total txs: ${outboundTxs.length}, Time window: ${Math.round(timeRange / 60)} minutes`,
+        description: 'Multiple assets were transferred to a single address in a short timeframe. This pattern may indicate compromise.',
+        technicalDetails: `All assets sent to: ${singleDest}, Total txs: ${outboundTxs.length}, Time window: ${Math.round(timeRange / 60)} minutes`,
         detectedAt: new Date().toISOString(),
         relatedAddresses: destinations,
         relatedTransactions: outboundTxs.map((tx) => tx?.hash).filter(Boolean) as string[],
-        ongoingRisk: true,
+        ongoingRisk: false, // MODIFIED: Need to verify
       };
     }
   }
@@ -405,24 +682,370 @@ export function inferPrivateKeyCompromise(transactions: TransactionData[]): Dete
 export function generateAnalysisSummary(
   status: SecurityStatus,
   threats: DetectedThreat[],
-  approvals: TokenApproval[]
+  approvals: TokenApproval[],
+  behaviorAnalysis?: BehaviorAnalysisResult
 ): string {
   // Safe array guards
   const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
   const safeApprovals = Array.isArray(approvals) ? approvals.filter(a => a != null) : [];
   
+  // NEW: Include behavioral analysis in summary
+  if (behaviorAnalysis) {
+    if (behaviorAnalysis.classification === 'NORMAL_USER') {
+      return 'No malicious behavior detected. Your wallet shows normal user activity patterns. ' +
+             'Continue practicing safe wallet hygiene.';
+    }
+    
+    if (behaviorAnalysis.classification === 'POWER_USER') {
+      return 'No malicious behavior detected. Your wallet shows power user / active trader patterns. ' +
+             'High transaction volume is normal for your usage pattern.';
+    }
+    
+    if (behaviorAnalysis.classification === 'CONFIRMED_DRAINER' || 
+        behaviorAnalysis.classification === 'CONFIRMED_SWEEPER') {
+      return 'CRITICAL: This wallet has been identified as a confirmed threat. ' +
+             'Do not send any funds to this address.';
+    }
+    
+    // For suspects, show confidence
+    if (behaviorAnalysis.confidence < 90) {
+      if (status === 'AT_RISK') {
+        return `Potential security concerns detected (confidence: ${behaviorAnalysis.confidence}%). ` +
+               'Review the identified risks below. No confirmed malicious behavior at this time.';
+      }
+    }
+  }
+  
   if (status === 'SAFE') {
-    return 'No significant security threats detected. Your wallet appears to be in good standing. Continue practicing safe wallet hygiene.';
+    return 'No significant security threats detected. Your wallet appears to be in good standing. ' +
+           'Continue practicing safe wallet hygiene.';
   }
 
   if (status === 'AT_RISK') {
     const riskCount = safeThreats.length + safeApprovals.filter((a) => a?.riskLevel === 'HIGH').length;
-    return `${riskCount} potential security concern${riskCount > 1 ? 's' : ''} detected. Review the identified risks below and consider taking preventive action.`;
+    return `${riskCount} potential security concern${riskCount > 1 ? 's' : ''} detected. ` +
+           'Review the identified risks below and consider taking preventive action.';
   }
 
-  // COMPROMISED
+  // COMPROMISED - only show if high confidence
   const criticalThreats = safeThreats.filter((t) => t?.severity === 'CRITICAL');
-  return `URGENT: ${criticalThreats.length} critical security threat${criticalThreats.length > 1 ? 's' : ''} detected. Immediate action recommended. Review the recovery plan below to protect remaining assets.`;
+  return `URGENT: ${criticalThreats.length} critical security threat${criticalThreats.length > 1 ? 's' : ''} detected. ` +
+         'Immediate action recommended. Review the recovery plan below to protect remaining assets.';
 }
 
+// ============================================
+// NEW: CONFIDENCE-BASED MESSAGING
+// ============================================
 
+export interface AnalysisMessage {
+  title: string;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  message: string;
+  showAlert: boolean;
+  actionRequired: boolean;
+}
+
+/**
+ * Generate user-facing message based on confidence level.
+ * CRITICAL: If confidence < 90%, do NOT show CRITICAL or DRAINER labels.
+ */
+export function generateConfidenceBasedMessage(
+  behaviorAnalysis: BehaviorAnalysisResult,
+  threats: DetectedThreat[]
+): AnalysisMessage {
+  const { confidence, classification, riskScore } = behaviorAnalysis;
+  
+  // RULE: If confidence < 90%, no CRITICAL alerts
+  if (confidence < 90) {
+    if (classification === 'NORMAL_USER' || classification === 'POWER_USER') {
+      return {
+        title: 'No Confirmed Threats',
+        severity: 'INFO',
+        message: 'No confirmed malicious behavior detected. Your wallet shows normal activity.',
+        showAlert: false,
+        actionRequired: false,
+      };
+    }
+    
+    if (riskScore >= 50) {
+      return {
+        title: 'Potential Concerns',
+        severity: 'WARNING',
+        message: `Some activity patterns warrant review (confidence: ${confidence}%). ` +
+                 'No confirmed malicious behavior at this time.',
+        showAlert: true,
+        actionRequired: false,
+      };
+    }
+    
+    return {
+      title: 'Analysis Complete',
+      severity: 'INFO',
+      message: 'No confirmed malicious behavior detected.',
+      showAlert: false,
+      actionRequired: false,
+    };
+  }
+  
+  // High confidence (>= 90%)
+  if (classification === 'CONFIRMED_DRAINER' || classification === 'CONFIRMED_SWEEPER') {
+    return {
+      title: 'CRITICAL: Confirmed Threat',
+      severity: 'CRITICAL',
+      message: 'This address is a confirmed malicious actor. Do not interact.',
+      showAlert: true,
+      actionRequired: true,
+    };
+  }
+  
+  if (classification === 'SWEEPER_BOT_SUSPECT' || classification === 'DRAINER_SUSPECT') {
+    return {
+      title: 'High Risk Detected',
+      severity: 'WARNING',
+      message: 'This address shows strong indicators of malicious behavior. Proceed with extreme caution.',
+      showAlert: true,
+      actionRequired: true,
+    };
+  }
+  
+  return {
+    title: 'Analysis Complete',
+    severity: 'INFO',
+    message: 'No confirmed malicious behavior detected.',
+    showAlert: false,
+    actionRequired: false,
+  };
+}
+
+// ============================================
+// NEW: FULL WALLET ANALYSIS PIPELINE
+// ============================================
+
+/**
+ * Complete wallet analysis with all new protections.
+ */
+export async function analyzeWalletComplete(
+  address: string,
+  chain: Chain,
+  transactions: TransactionData[],
+  approvals: ApprovalData[]
+): Promise<{
+  threats: DetectedThreat[];
+  approvalAnalysis: TokenApproval[];
+  behaviorAnalysis: BehaviorAnalysisResult;
+  securityStatus: SecurityStatus;
+  riskScore: number;
+  message: AnalysisMessage;
+  excludedContracts: string[];
+}> {
+  // Run threat detection with new protections
+  const { threats, behaviorAnalysis, excludedFromFlagging } = await detectDrainerPatterns(
+    transactions,
+    chain,
+    address
+  );
+  
+  // Analyze approvals with safe contract awareness
+  const approvalAnalysis = analyzeApprovals(approvals, chain);
+  
+  // Calculate risk score with behavioral factors
+  const factors: RiskFactors = {
+    maliciousInteractions: threats.filter(t => t.type === 'WALLET_DRAINER').length,
+    infiniteApprovals: approvalAnalysis.filter(a => a.isUnlimited && a.riskLevel !== 'LOW').length,
+    suspiciousTransactions: threats.filter(t => t.severity === 'HIGH').length,
+    recentDrainActivity: threats.filter(t => t.ongoingRisk).length,
+    highRiskApprovals: approvalAnalysis.filter(a => a.riskLevel === 'CRITICAL').length,
+    unknownContractInteractions: 0,
+    behaviorRiskScore: behaviorAnalysis.riskScore * 0.5, // Weight behavioral analysis
+    legitimateActivityScore: behaviorAnalysis.evidence
+      .filter(e => e.weight < 0)
+      .reduce((sum, e) => sum + Math.abs(e.weight), 0), // Subtract legitimate activity
+  };
+  
+  const riskScore = calculateRiskScore(factors);
+  const securityStatus = determineSecurityStatus(riskScore, threats, behaviorAnalysis);
+  const message = generateConfidenceBasedMessage(behaviorAnalysis, threats);
+  
+  return {
+    threats,
+    approvalAnalysis,
+    behaviorAnalysis,
+    securityStatus,
+    riskScore,
+    message,
+    excludedContracts: excludedFromFlagging,
+  };
+}
+
+// ============================================
+// NEW: ENHANCED ANALYSIS WITH TRANSACTION LABELING
+// ============================================
+
+/**
+ * Analyze wallet with explicit transaction labeling.
+ * Each transaction is labeled as LEGITIMATE, NEEDS_REVIEW, or SUSPICIOUS.
+ * 
+ * PRINCIPLE: Default to LEGITIMATE unless proven malicious.
+ */
+export async function analyzeWalletWithLabeling(
+  address: string,
+  chain: Chain,
+  transactions: TransactionData[],
+  approvals: ApprovalData[]
+): Promise<{
+  threats: DetectedThreat[];
+  approvalAnalysis: TokenApproval[];
+  behaviorAnalysis: BehaviorAnalysisResult;
+  securityStatus: SecurityStatus;
+  riskScore: number;
+  message: AnalysisMessage;
+  excludedContracts: string[];
+  // NEW: Transaction labeling
+  labeledTransactions: LabeledTransaction[];
+  transactionSummary: TransactionSummary;
+  riskReport: WalletRiskReport;
+}> {
+  // Safe transaction array
+  const safeTxs = Array.isArray(transactions) ? transactions : [];
+  
+  // ============================================
+  // STEP 1: Label all transactions first
+  // ============================================
+  const txInputs: TransactionInput[] = safeTxs.map(tx => ({
+    hash: tx.hash,
+    from: tx.from,
+    to: tx.to,
+    value: tx.value,
+    input: tx.input,
+    timestamp: tx.timestamp,
+    blockNumber: tx.blockNumber,
+    isError: false,
+  }));
+  
+  const { labeledTransactions, summary: transactionSummary } = labelTransactions(
+    txInputs,
+    address,
+    chain
+  );
+  
+  // ============================================
+  // STEP 2: Filter out LEGITIMATE transactions from threat analysis
+  // Only analyze transactions that are NOT clearly legitimate
+  // ============================================
+  const legitimateTxHashes = new Set(
+    labeledTransactions
+      .filter(lt => lt.label === 'LEGITIMATE')
+      .map(lt => lt.hash)
+  );
+  
+  // Only consider non-legitimate transactions for threat detection
+  const transactionsToAnalyze = safeTxs.filter(
+    tx => !legitimateTxHashes.has(tx.hash)
+  );
+  
+  // ============================================
+  // STEP 3: Run behavioral analysis on filtered transactions
+  // ============================================
+  const { threats, behaviorAnalysis, excludedFromFlagging } = await detectDrainerPatterns(
+    transactionsToAnalyze,
+    chain,
+    address
+  );
+  
+  // ============================================
+  // STEP 4: Cross-reference with labeled suspicious transactions
+  // Only keep threats that align with SUSPICIOUS labels
+  // ============================================
+  const suspiciousTxHashes = new Set(
+    labeledTransactions
+      .filter(lt => lt.label === 'SUSPICIOUS')
+      .map(lt => lt.hash)
+  );
+  
+  // Filter threats: only keep if related to suspicious transactions OR confirmed drainer
+  const validatedThreats = threats.filter(threat => {
+    // Always keep threats from confirmed drainer database
+    if (threat.type === 'WALLET_DRAINER' && threat.severity === 'CRITICAL') {
+      const relatedToSuspicious = threat.relatedTransactions?.some(hash =>
+        suspiciousTxHashes.has(hash)
+      );
+      if (relatedToSuspicious) return true;
+    }
+    
+    // For other threats, verify against labeling
+    const hasRelatedSuspicious = threat.relatedTransactions?.some(hash =>
+      suspiciousTxHashes.has(hash) || !legitimateTxHashes.has(hash)
+    );
+    
+    return hasRelatedSuspicious;
+  });
+  
+  // ============================================
+  // STEP 5: Adjust risk score based on legitimate activity ratio
+  // ============================================
+  const legitimateRatio = transactionSummary.legitimatePercentage / 100;
+  
+  // Analyze approvals
+  const approvalAnalysis = analyzeApprovals(approvals, chain);
+  
+  // Calculate risk factors
+  const factors: RiskFactors = {
+    maliciousInteractions: validatedThreats.filter(t => t.type === 'WALLET_DRAINER').length,
+    infiniteApprovals: approvalAnalysis.filter(a => a.isUnlimited && a.riskLevel !== 'LOW').length,
+    suspiciousTransactions: validatedThreats.filter(t => t.severity === 'HIGH').length,
+    recentDrainActivity: validatedThreats.filter(t => t.ongoingRisk).length,
+    highRiskApprovals: approvalAnalysis.filter(a => a.riskLevel === 'CRITICAL').length,
+    unknownContractInteractions: 0,
+    behaviorRiskScore: behaviorAnalysis.riskScore * 0.5,
+    // ENHANCED: Higher legitimate activity = lower risk
+    legitimateActivityScore: Math.round(legitimateRatio * 50) + 
+      behaviorAnalysis.evidence
+        .filter(e => e.weight < 0)
+        .reduce((sum, e) => sum + Math.abs(e.weight), 0),
+  };
+  
+  const riskScore = calculateRiskScore(factors);
+  
+  // Adjust security status based on labeling
+  let securityStatus = determineSecurityStatus(riskScore, validatedThreats, behaviorAnalysis);
+  
+  // If > 90% legitimate and no SUSPICIOUS transactions, force SAFE
+  if (legitimateRatio > 0.9 && transactionSummary.suspiciousCount === 0) {
+    securityStatus = 'SAFE';
+  }
+  
+  // Generate risk report
+  const riskReport = generateRiskReport(address, chain, labeledTransactions);
+  
+  // Generate message
+  const message = generateConfidenceBasedMessage(behaviorAnalysis, validatedThreats);
+  
+  return {
+    threats: validatedThreats,
+    approvalAnalysis,
+    behaviorAnalysis,
+    securityStatus,
+    riskScore,
+    message,
+    excludedContracts: excludedFromFlagging,
+    labeledTransactions,
+    transactionSummary,
+    riskReport,
+  };
+}
+
+// ============================================
+// HELPER: Check if transaction is to/from exchange
+// ============================================
+
+export function isExchangeTransaction(from: string, to: string): boolean {
+  const normalizedFrom = from?.toLowerCase() || '';
+  const normalizedTo = to?.toLowerCase() || '';
+  
+  return EXCHANGE_HOT_WALLETS.has(normalizedFrom) || EXCHANGE_HOT_WALLETS.has(normalizedTo);
+}
+
+export function getExchangeName(address: string): string | null {
+  const normalized = address?.toLowerCase() || '';
+  return EXCHANGE_HOT_WALLETS.get(normalized) || null;
+}

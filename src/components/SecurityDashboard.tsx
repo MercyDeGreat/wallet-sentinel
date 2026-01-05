@@ -59,7 +59,11 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
       >
         <div className="flex flex-col md:flex-row md:items-center gap-4">
           {/* Status Badge */}
-          <StatusBadge status={result.securityStatus} />
+          <StatusBadge 
+            status={result.securityStatus} 
+            chain={result.chain}
+            chainAwareStatus={result.chainAwareStatus}
+          />
 
           {/* Wallet Info */}
           <div className="flex-1">
@@ -103,6 +107,38 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
           </div>
         </div>
       </motion.div>
+
+      {/* Solana Disclaimer - CRITICAL for user awareness */}
+      {result.chain === 'solana' && result.chainDisclaimer && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.05 }}
+          className="glass-card rounded-xl p-4 border-l-4 border-l-blue-500 bg-blue-500/5"
+        >
+          <div className="flex items-start gap-3">
+            <Shield className="w-5 h-5 text-blue-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <h4 className="font-semibold text-sm text-blue-400 mb-1">
+                Solana Analysis Limitations
+              </h4>
+              <p className="text-sm text-sentinel-muted">
+                {result.chainDisclaimer}
+              </p>
+              {result.analysisMetadata?.limitations && result.analysisMetadata.limitations.length > 0 && (
+                <ul className="mt-2 text-xs text-sentinel-muted space-y-1">
+                  {result.analysisMetadata.limitations.slice(0, 3).map((limitation, index) => (
+                    <li key={index} className="flex items-center gap-1.5">
+                      <span className="w-1 h-1 bg-blue-400/50 rounded-full" />
+                      {limitation}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Quick Stats */}
       <motion.div
@@ -182,11 +218,19 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
         {activeTab === 'threats' && (
           <div className="space-y-4">
             {safeThreats.length === 0 ? (
-              <EmptyState
-                icon={<Shield className="w-12 h-12 text-status-safe" />}
-                title="No Threats Detected"
-                description="No known security threats were found for this wallet."
-              />
+              result.chain === 'solana' ? (
+                <EmptyState
+                  icon={<Shield className="w-12 h-12 text-blue-400" />}
+                  title="No On-Chain Threats Detected"
+                  description="No detectable on-chain security threats were found. Note: Solana compromises often occur off-chain and may not leave visible traces."
+                />
+              ) : (
+                <EmptyState
+                  icon={<Shield className="w-12 h-12 text-status-safe" />}
+                  title="No Threats Detected"
+                  description="No known security threats were found for this wallet."
+                />
+              )
             ) : (
               safeThreats.map((threat) => (
                 <ThreatCard key={threat?.id} threat={threat} chain={result?.chain || 'ethereum'} />
@@ -274,8 +318,20 @@ function OverviewTab({
         </div>
         {safeThreats.length === 0 ? (
           <div className="text-center py-8">
-            <CheckCircle className="w-12 h-12 text-status-safe mx-auto mb-3" />
-            <p className="text-sentinel-muted">No threats detected</p>
+            {result.chain === 'solana' ? (
+              <>
+                <Shield className="w-12 h-12 text-blue-400 mx-auto mb-3" />
+                <p className="text-sentinel-muted">No on-chain threats detected</p>
+                <p className="text-xs text-sentinel-muted mt-1">
+                  Off-chain attacks may not be visible
+                </p>
+              </>
+            ) : (
+              <>
+                <CheckCircle className="w-12 h-12 text-status-safe mx-auto mb-3" />
+                <p className="text-sentinel-muted">No threats detected</p>
+              </>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
@@ -346,15 +402,28 @@ function OverviewTab({
   );
 }
 
-function StatusBadge({ status }: { status: SecurityStatus }) {
+function StatusBadge({ 
+  status, 
+  chain,
+  chainAwareStatus 
+}: { 
+  status: SecurityStatus;
+  chain?: string;
+  chainAwareStatus?: import('@/types').ChainAwareSecurityLabel;
+}) {
+  // For Solana, use chain-aware labels to avoid false "SAFE" claims
+  const isSolana = chain === 'solana';
+  
   const config = {
     SAFE: {
-      icon: CheckCircle,
-      label: 'SAFE',
-      bg: 'bg-status-safe-bg',
-      border: 'border-status-safe/30',
-      text: 'text-status-safe',
-      dot: 'status-dot-safe',
+      icon: isSolana ? Shield : CheckCircle, // Different icon for Solana
+      label: isSolana 
+        ? (chainAwareStatus?.shortLabel || 'NO RISK DETECTED')
+        : 'SAFE',
+      bg: isSolana ? 'bg-blue-500/10' : 'bg-status-safe-bg', // Different color for Solana
+      border: isSolana ? 'border-blue-500/30' : 'border-status-safe/30',
+      text: isSolana ? 'text-blue-400' : 'text-status-safe',
+      dot: isSolana ? 'status-dot-info' : 'status-dot-safe',
     },
     AT_RISK: {
       icon: AlertTriangle,

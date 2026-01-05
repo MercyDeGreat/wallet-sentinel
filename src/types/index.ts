@@ -3,12 +3,101 @@
 // ============================================
 // Security analysis types with behavioral risk scoring
 // Prevents false positives through directional analysis
+//
+// CRITICAL FALSE POSITIVE PREVENTION:
+// - Contracts are classified BEFORE threat labels are applied
+// - Safe contracts (OpenSea, ENS, Pendle, etc.) are NEVER flagged
+// - Confidence < 90% = no CRITICAL alerts
+// - Normal user behavior is explicitly classified
 
 // Supported blockchain networks
 export type Chain = 'ethereum' | 'base' | 'bnb' | 'solana';
 
 // Security status levels
 export type SecurityStatus = 'SAFE' | 'AT_RISK' | 'COMPROMISED';
+
+// ============================================
+// CHAIN-AWARE SECURITY STATUS
+// ============================================
+// Ethereum: Deterministic compromise detection (on-chain artifacts)
+// Solana: Absence-of-evidence, NOT proof of safety (off-chain attacks)
+//
+// CRITICAL: Solana wallets should NEVER be labeled as "Fully Safe" or "Clean"
+// because Solana compromises (phishing, session hijacks) often leave NO on-chain traces.
+
+export type SolanaSecurityStatus = 
+  | 'NO_ONCHAIN_RISK_DETECTED'  // No detectable on-chain risk (NOT "safe")
+  | 'AT_RISK'                    // On-chain risk indicators found
+  | 'COMPROMISED';               // Strong on-chain evidence of compromise
+
+// Display labels for security status (chain-aware)
+export interface ChainAwareSecurityLabel {
+  status: SecurityStatus | SolanaSecurityStatus;
+  displayLabel: string;
+  shortLabel: string;
+  description: string;
+  disclaimer?: string;
+  isDefinitiveSafe: boolean;  // FALSE for Solana - absence of evidence ≠ safe
+}
+
+// Chain-specific analysis metadata
+export interface ChainAnalysisMetadata {
+  chain: Chain;
+  analysisType: 'DETERMINISTIC' | 'HEURISTIC' | 'LIMITED';
+  canDetectOffChainCompromise: boolean;
+  disclaimer?: string;
+  limitations: string[];
+}
+
+// Solana-specific disclaimer
+export const SOLANA_SECURITY_DISCLAIMER = 
+  'Solana compromises are often off-chain (phishing signatures, session hijacks) ' +
+  'and may not leave detectable on-chain artifacts. ' +
+  'This analysis only covers on-chain indicators.';
+
+// Chain analysis boundaries
+export const CHAIN_ANALYSIS_METADATA: Record<Chain, ChainAnalysisMetadata> = {
+  ethereum: {
+    chain: 'ethereum',
+    analysisType: 'DETERMINISTIC',
+    canDetectOffChainCompromise: false,
+    limitations: [
+      'Cannot detect phishing signatures before execution',
+      'Cannot detect compromised private keys until used',
+    ],
+  },
+  base: {
+    chain: 'base',
+    analysisType: 'DETERMINISTIC',
+    canDetectOffChainCompromise: false,
+    limitations: [
+      'Cannot detect phishing signatures before execution',
+      'Cannot detect compromised private keys until used',
+    ],
+  },
+  bnb: {
+    chain: 'bnb',
+    analysisType: 'DETERMINISTIC',
+    canDetectOffChainCompromise: false,
+    limitations: [
+      'Cannot detect phishing signatures before execution',
+      'Cannot detect compromised private keys until used',
+    ],
+  },
+  solana: {
+    chain: 'solana',
+    analysisType: 'LIMITED',
+    canDetectOffChainCompromise: false,
+    disclaimer: SOLANA_SECURITY_DISCLAIMER,
+    limitations: [
+      'Cannot detect off-chain phishing signatures',
+      'Cannot detect session/cookie hijacks',
+      'Cannot detect compromised browser extensions',
+      'Many Solana drains leave no on-chain trace',
+      'Absence of evidence is NOT proof of safety',
+    ],
+  },
+};
 
 // Attack type classifications
 export type AttackType =
@@ -24,6 +113,62 @@ export type AttackType =
 
 // Risk severity levels
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+// ============================================
+// NEW: USER BEHAVIOR CLASSIFICATION
+// ============================================
+// Classifies wallet behavior to prevent false positives.
+// Normal users and power users should NEVER be flagged as drainers.
+
+export type UserBehaviorType =
+  | 'NORMAL_USER'           // Regular user activity
+  | 'POWER_USER'            // High-frequency trader / power user
+  | 'NEW_WALLET'            // New wallet with limited history
+  | 'SWEEPER_BOT_SUSPECT'   // Shows sweeper behavior patterns
+  | 'CONFIRMED_SWEEPER'     // Confirmed sweeper bot
+  | 'DRAINER_SUSPECT'       // Shows drainer patterns
+  | 'CONFIRMED_DRAINER'     // Confirmed drainer
+  | 'COMPROMISED_VICTIM'    // Wallet was drained by someone else
+  | 'UNKNOWN';
+
+// ============================================
+// NEW: CONTRACT CLASSIFICATION
+// ============================================
+// Contracts must be classified BEFORE applying threat labels.
+// Safe contracts can NEVER be flagged as malicious.
+
+export type ContractType =
+  | 'MARKETPLACE'           // NFT marketplaces (OpenSea, Blur, etc.)
+  | 'NFT_MINT'              // NFT mint contracts
+  | 'DEFI_PROTOCOL'         // DeFi protocols (Uniswap, Aave, etc.)
+  | 'INFRASTRUCTURE'        // Routers, relayers, bridges, multisigs
+  | 'TOKEN_CONTRACT'        // ERC20/721/1155 tokens
+  | 'USER_WALLET'           // EOA (Externally Owned Account)
+  | 'UNKNOWN_CONTRACT'      // Unverified smart contract
+  | 'VERIFIED_SERVICE'      // Other verified high-interaction contracts
+  | 'CEX_HOT_WALLET'        // Centralized exchange hot wallet
+  | 'BRIDGE'                // Cross-chain bridge
+  | 'ENS'                   // Ethereum Name Service
+  | 'STAKING';              // Staking protocol
+
+// ============================================
+// NEW: CONFIDENCE-BASED ALERT LEVELS
+// ============================================
+// CRITICAL: If confidence < 90%, do NOT show CRITICAL or DRAINER labels.
+
+export interface ConfidenceMetrics {
+  // Overall confidence in the analysis (0-100)
+  confidence: number;
+  
+  // Should we show a critical alert?
+  showCriticalAlert: boolean;
+  
+  // Reasons contributing to confidence
+  confidenceFactors: string[];
+  
+  // Reasons that reduced confidence
+  uncertaintyFactors: string[];
+}
 
 // ============================================
 // WALLET ROLE CLASSIFICATION
@@ -149,6 +294,21 @@ export interface WalletAnalysisResult {
   
   // Weighted risk score (0-100)
   riskScore: number;
+  
+  // ============================================
+  // CHAIN-AWARE STATUS (NEW)
+  // ============================================
+  // For Solana: Never show "SAFE" - use "NO_ONCHAIN_RISK_DETECTED" instead
+  // This prevents misleading users about off-chain risks
+  
+  // Chain-aware security label for display
+  chainAwareStatus?: ChainAwareSecurityLabel;
+  
+  // Chain analysis metadata and limitations
+  analysisMetadata?: ChainAnalysisMetadata;
+  
+  // Solana-specific disclaimer (if applicable)
+  chainDisclaimer?: string;
   
   // ============================================
   // CLASSIFICATION (Prevents False Positives)

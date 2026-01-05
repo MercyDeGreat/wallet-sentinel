@@ -107,15 +107,11 @@ export const KNOWN_MALICIOUS_CONTRACTS: MaliciousContract[] = [
     confirmationLevel: 'CONFIRMED',
   },
   
-  // Ice Phishing contracts
-  {
-    address: '0x00000000000000adc04c56bf30ac9d3c0aaf14dc',
-    chain: 'ethereum',
-    type: 'PHISHING_SIGNATURE',
-    name: 'Seaport Conduit Phishing',
-    reportedAt: '2023-05-01T00:00:00Z',
-    confirmationLevel: 'CONFIRMED',
-  },
+  // NOTE: OpenSea Seaport (0x00000000000000adc04c56bf30ac9d3c0aaf14dc) was incorrectly
+  // listed here as "Seaport Conduit Phishing" - this is WRONG!
+  // The OpenSea Seaport contract is LEGITIMATE and should NEVER be flagged.
+  // Phishing attacks that use Seaport ≠ Seaport being malicious.
+  // REMOVED: 2024-01-05 to fix false positive
   
   // Known scam NFT contracts
   {
