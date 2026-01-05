@@ -294,8 +294,71 @@ function OverviewTab({
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* Critical Actions */}
-      {result?.securityStatus !== 'SAFE' && (
+      {/* PREVIOUSLY_COMPROMISED Banner - Historical compromise, no active threat */}
+      {result?.securityStatus === 'PREVIOUSLY_COMPROMISED' && (
+        <div className="lg:col-span-2">
+          <div className="glass-card rounded-xl p-6 border-l-4 border-amber-500 bg-amber-500/5">
+            <h3 className="font-display font-semibold text-lg mb-3 flex items-center gap-2 text-amber-400">
+              <Clock className="w-5 h-5" />
+              Previously Compromised - No Active Threat
+            </h3>
+            <p className="text-sentinel-muted mb-4">
+              This wallet experienced a security incident in the past, but all malicious access has been revoked.
+              The wallet is currently safe to use with normal caution.
+            </p>
+            <div className="bg-sentinel-surface rounded-lg p-4 space-y-2">
+              <div className="flex items-center gap-2 text-sm">
+                <CheckCircle className="w-4 h-4 text-status-safe" />
+                <span className="text-sentinel-muted">All malicious approvals revoked</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <CheckCircle className="w-4 h-4 text-status-safe" />
+                <span className="text-sentinel-muted">No active drainer access</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <CheckCircle className="w-4 h-4 text-status-safe" />
+                <span className="text-sentinel-muted">No ongoing drain activity</span>
+              </div>
+            </div>
+            <p className="text-xs text-sentinel-muted mt-3">
+              💡 Tip: Continue to monitor your approvals regularly and revoke any suspicious permissions.
+            </p>
+          </div>
+        </div>
+      )}
+      
+      {/* ACTIVELY_COMPROMISED Banner - Urgent action required */}
+      {result?.securityStatus === 'ACTIVELY_COMPROMISED' && (
+        <div className="lg:col-span-2">
+          <div className="glass-card rounded-xl p-6 border-l-4 border-status-danger bg-status-danger/10">
+            <h3 className="font-display font-semibold text-lg mb-3 flex items-center gap-2 text-status-danger">
+              <AlertCircle className="w-5 h-5" />
+              🚨 ACTIVELY COMPROMISED - Immediate Action Required
+            </h3>
+            <p className="text-sentinel-text mb-4">
+              This wallet has active malicious access. Attackers can still drain your assets.
+              Take action IMMEDIATELY to secure your funds.
+            </p>
+            <div className="bg-sentinel-surface rounded-lg p-4 space-y-2">
+              <div className="flex items-center gap-2 text-sm text-status-danger">
+                <AlertTriangle className="w-4 h-4" />
+                <span>Malicious approvals are still active</span>
+              </div>
+            </div>
+            <button
+              onClick={() => onNavigate('recovery')}
+              className="mt-4 px-4 py-2 bg-status-danger text-white rounded-lg hover:bg-red-600 transition-colors font-semibold"
+            >
+              View Recovery Plan →
+            </button>
+          </div>
+        </div>
+      )}
+      
+      {/* Critical Actions - For other non-safe statuses */}
+      {result?.securityStatus !== 'SAFE' && 
+       result?.securityStatus !== 'PREVIOUSLY_COMPROMISED' && 
+       result?.securityStatus !== 'ACTIVELY_COMPROMISED' && (
         <div className="lg:col-span-2">
           <div className="glass-card rounded-xl p-6 border-l-4 border-status-danger">
             <h3 className="font-display font-semibold text-lg mb-4 flex items-center gap-2">
@@ -460,6 +523,14 @@ function StatusBadge({
       text: isSolana ? 'text-blue-400' : 'text-status-safe',
       dot: isSolana ? 'status-dot-info' : 'status-dot-safe',
     },
+    PREVIOUSLY_COMPROMISED: {
+      icon: Shield, // Shield with history indicator
+      label: 'PREVIOUSLY COMPROMISED',
+      bg: 'bg-amber-500/10',
+      border: 'border-amber-500/30',
+      text: 'text-amber-400',
+      dot: 'status-dot-historical',
+    },
     POTENTIALLY_COMPROMISED: {
       icon: AlertTriangle,
       label: 'POTENTIALLY COMPROMISED',
@@ -475,6 +546,14 @@ function StatusBadge({
       border: 'border-status-warning/30',
       text: 'text-status-warning',
       dot: 'status-dot-warning',
+    },
+    ACTIVELY_COMPROMISED: {
+      icon: AlertCircle,
+      label: 'ACTIVELY COMPROMISED',
+      bg: 'bg-status-danger-bg',
+      border: 'border-status-danger/30',
+      text: 'text-status-danger',
+      dot: 'status-dot-danger',
     },
     COMPROMISED: {
       icon: AlertCircle,

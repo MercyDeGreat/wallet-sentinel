@@ -13,10 +13,208 @@
 // D. User Intent Validation
 // E. Safe Label Hard Constraints
 
-import { Chain, SecurityStatus, CompromiseReasonCode, CompromiseEvidence } from '@/types';
+import { Chain, SecurityStatus, CompromiseReasonCode, CompromiseEvidence, HistoricalIncident } from '@/types';
 import { isMaliciousAddress, isDrainerRecipient, isLegitimateContract } from './malicious-database';
 import { isSafeContract, isENSContract, isDeFiProtocol, isInfrastructureContract, isNFTMarketplace } from './safe-contracts';
 import { checkInfrastructureProtection } from './infrastructure-protection';
+
+// ============================================
+// HISTORICAL VS ACTIVE COMPROMISE DETECTION
+// ============================================
+// A wallet should be marked ACTIVELY_COMPROMISED only if:
+// - Active unlimited or high-risk approval exists
+// - Known drainer contract still has allowance
+// - Automated outflows continue without user initiation
+// - Private key reuse detected
+//
+// If historical exploit occurred but all threats remediated:
+// - Mark as PREVIOUSLY_COMPROMISED
+// - Show historical incident details
+// - Explain current safety status
+
+// Known airdrop drainer contracts (BNB Chain)
+const KNOWN_AIRDROP_DRAINERS = new Set([
+  // ICE Token drainers
+  '0x1234567890abcdef1234567890abcdef12345678', // Placeholder - add real addresses
+]);
+
+// BNB Chain specific airdrop contracts that are often exploited
+const BNB_AIRDROP_CONTRACTS = new Set([
+  // Add known airdrop contracts here
+]);
+
+/**
+ * Check if a malicious approval is still active
+ */
+function isApprovalStillActive(
+  approval: ApprovalForAnalysis,
+  allApprovals: ApprovalForAnalysis[]
+): boolean {
+  // If explicitly marked as revoked
+  if (approval.wasRevoked) {
+    return false;
+  }
+  
+  // Check if there's a subsequent approval to the same spender with 0 amount (revocation)
+  const laterRevocation = allApprovals.find(a => 
+    a.spender.toLowerCase() === approval.spender.toLowerCase() &&
+    a.token.toLowerCase() === approval.token.toLowerCase() &&
+    a.timestamp > approval.timestamp &&
+    (a.amount === '0' || BigInt(a.amount) === BigInt(0))
+  );
+  
+  return !laterRevocation;
+}
+
+/**
+ * Classify an incident as active or historical
+ */
+function classifyThreatTiming(
+  evidence: CompromiseEvidence,
+  approvals: ApprovalForAnalysis[],
+  transactions: TransactionForAnalysis[],
+  currentTimestamp: number
+): { isActive: boolean; isHistorical: boolean; remediated: boolean; remediationDetails?: string } {
+  const evidenceTimestamp = evidence.timestamp ? new Date(evidence.timestamp).getTime() / 1000 : 0;
+  const daysSinceIncident = (currentTimestamp - evidenceTimestamp) / (24 * 60 * 60);
+  
+  // ============================================
+  // RULE 0: LOW severity evidence is NEVER considered "active"
+  // ============================================
+  // LOW severity = informational only, should not trigger alerts
+  if (evidence.severity === 'LOW') {
+    return {
+      isActive: false,
+      isHistorical: true,
+      remediated: true,
+      remediationDetails: 'Low severity - informational only'
+    };
+  }
+  
+  // ============================================
+  // RULE 1: Approval-related - check if approval still active
+  // ============================================
+  if (evidence.code === 'UNLIMITED_APPROVAL_EOA' || 
+      evidence.code === 'UNLIMITED_APPROVAL_UNVERIFIED' ||
+      evidence.code === 'ATTACKER_LINKED_ADDRESS') {
+    
+    const relatedApproval = approvals.find(a => 
+      a.spender.toLowerCase() === evidence.relatedAddress?.toLowerCase()
+    );
+    
+    if (relatedApproval) {
+      const stillActive = isApprovalStillActive(relatedApproval, approvals);
+      if (!stillActive) {
+        return {
+          isActive: false,
+          isHistorical: true,
+          remediated: true,
+          remediationDetails: 'Malicious approval has been revoked'
+        };
+      }
+    }
+  }
+  
+  // ============================================
+  // RULE 2: Check for RECENT malicious activity (7 days)
+  // ============================================
+  const recentMaliciousActivity = transactions.some(tx => {
+    const txTime = tx.timestamp;
+    const daysSinceTx = (currentTimestamp - txTime) / (24 * 60 * 60);
+    const isMalicious = isMaliciousAddress(tx.to?.toLowerCase(), 'ethereum') ||
+                        isDrainerRecipient(tx.to?.toLowerCase());
+    return daysSinceTx <= 7 && isMalicious;
+  });
+  
+  if (recentMaliciousActivity) {
+    return { isActive: true, isHistorical: false, remediated: false };
+  }
+  
+  // ============================================
+  // RULE 3: Old incidents (> 30 days) are historical
+  // ============================================
+  if (daysSinceIncident > 30) {
+    return {
+      isActive: false,
+      isHistorical: true,
+      remediated: true,
+      remediationDetails: `No malicious activity in ${Math.floor(daysSinceIncident)} days`
+    };
+  }
+  
+  // ============================================
+  // RULE 4: MEDIUM severity within 7 days = potentially active
+  // ============================================
+  if (evidence.severity === 'MEDIUM' && daysSinceIncident <= 7) {
+    return { isActive: true, isHistorical: false, remediated: false };
+  }
+  
+  // ============================================
+  // DEFAULT: Only CRITICAL/HIGH within 7 days are truly active
+  // Everything else is historical
+  // ============================================
+  const isHighSeverity = evidence.severity === 'CRITICAL' || evidence.severity === 'HIGH';
+  if (isHighSeverity && daysSinceIncident <= 7) {
+    return { isActive: true, isHistorical: false, remediated: false };
+  }
+  
+  return { isActive: false, isHistorical: true, remediated: daysSinceIncident > 30 };
+}
+
+/**
+ * Detect airdrop drain incidents (common on BNB Chain)
+ */
+function detectAirdropDrainIncident(
+  walletAddress: string,
+  chain: Chain,
+  transactions: TransactionForAnalysis[],
+  tokenTransfers: TokenTransferForAnalysis[],
+  approvals: ApprovalForAnalysis[]
+): HistoricalIncident | null {
+  // Look for pattern: approval to unknown contract followed by token drain
+  // Common in airdrop exploits
+  
+  for (const approval of approvals) {
+    const spenderLower = approval.spender.toLowerCase();
+    
+    // Check if this is a known drainer or suspicious airdrop contract
+    const maliciousInfo = isMaliciousAddress(spenderLower, chain);
+    if (!maliciousInfo && !KNOWN_AIRDROP_DRAINERS.has(spenderLower)) {
+      continue;
+    }
+    
+    // Look for token transfers after this approval to the drainer
+    const drainTransfers = tokenTransfers.filter(t => 
+      t.from.toLowerCase() === walletAddress.toLowerCase() &&
+      t.timestamp >= approval.timestamp &&
+      t.timestamp <= approval.timestamp + 3600 // Within 1 hour
+    );
+    
+    if (drainTransfers.length > 0) {
+      const isStillActive = isApprovalStillActive(approval, approvals);
+      
+      return {
+        type: 'AIRDROP_DRAIN',
+        timestamp: new Date(approval.timestamp * 1000).toISOString(),
+        txHash: approval.transactionHash,
+        maliciousAddress: spenderLower,
+        maliciousContractName: maliciousInfo?.name || 'Unknown Airdrop Drainer',
+        chain,
+        approvalStillActive: isStillActive,
+        assetsLost: drainTransfers.map(t => ({
+          token: t.tokenAddress,
+          symbol: t.tokenSymbol,
+          amount: t.value,
+        })),
+        explanation: isStillActive 
+          ? `Airdrop claim contract drained tokens. WARNING: Approval is still active!`
+          : `Historical airdrop drain. The malicious approval has been revoked.`,
+      };
+    }
+  }
+  
+  return null;
+}
 
 // ============================================
 // DESTINATION TRUST CLASSIFICATION
@@ -200,6 +398,36 @@ export interface CompromiseAnalysisResult {
   // Can this wallet be marked SAFE?
   canBeSafe: boolean;
   safetyBlockers: string[];
+  
+  // ============================================
+  // HISTORICAL VS ACTIVE COMPROMISE TRACKING
+  // ============================================
+  historicalCompromise?: {
+    hasHistoricalIncident: boolean;
+    isCurrentlyActive: boolean;
+    incidents: Array<{
+      type: 'AIRDROP_DRAIN' | 'APPROVAL_EXPLOIT' | 'PHISHING' | 'SWEEPER_ATTACK' | 'UNKNOWN';
+      timestamp: string;
+      txHash: string;
+      maliciousAddress: string;
+      explanation: string;
+      approvalStillActive: boolean;
+      chain: Chain;
+    }>;
+    remediationStatus: {
+      allApprovalsRevoked: boolean;
+      noActiveDrainerAccess: boolean;
+      noOngoingDrains: boolean;
+      lastMaliciousActivity?: string;
+      daysSinceLastIncident?: number;
+    };
+  };
+  
+  // Active threats (require immediate action)
+  activeThreats: CompromiseEvidence[];
+  
+  // Historical threats (no longer active, remediated)
+  historicalThreats: CompromiseEvidence[];
 }
 
 export interface SafetyCheckResults {
@@ -293,13 +521,105 @@ export async function analyzeWalletCompromise(
   const safetyChecks = performSafetyChecks(evidence, reasonCodes, approvals, transactions, tokenTransfers, normalized, chain);
 
   // ============================================
-  // DETERMINE FINAL STATUS
+  // F. HISTORICAL VS ACTIVE THREAT CLASSIFICATION
   // ============================================
-  const { status, confidence, summary } = determineSecurityStatus(
+  const currentTimestamp = Math.floor(Date.now() / 1000);
+  const activeThreats: CompromiseEvidence[] = [];
+  const historicalThreats: CompromiseEvidence[] = [];
+  
+  console.log(`[CompromiseDetector] Classifying ${evidence.length} evidence items for ${normalized.slice(0, 10)}...`);
+  
+  // Classify each evidence item
+  for (const ev of evidence) {
+    const timing = classifyThreatTiming(ev, approvals, transactions, currentTimestamp);
+    
+    console.log(`[CompromiseDetector] Evidence: ${ev.code}, severity: ${ev.severity}, isActive: ${timing.isActive}, isHistorical: ${timing.isHistorical}`);
+    
+    // Add classification to evidence
+    ev.isHistorical = timing.isHistorical;
+    ev.isActiveThreat = timing.isActive;
+    ev.wasRemediated = timing.remediated;
+    ev.remediationDetails = timing.remediationDetails;
+    
+    if (timing.isActive) {
+      activeThreats.push(ev);
+    } else {
+      historicalThreats.push(ev);
+    }
+  }
+  
+  console.log(`[CompromiseDetector] Result: ${activeThreats.length} active, ${historicalThreats.length} historical threats for ${normalized.slice(0, 10)}...`)
+  
+  // Check for airdrop drain incident (common on BNB Chain)
+  const airdropIncident = detectAirdropDrainIncident(normalized, chain, transactions, tokenTransfers, approvals);
+  
+  // Check if any malicious approvals are still active
+  const hasActiveMaliciousApproval = approvals.some(a => {
+    const isMalicious = isMaliciousAddress(a.spender.toLowerCase(), chain) || 
+                        isDrainerRecipient(a.spender.toLowerCase());
+    return isMalicious && isApprovalStillActive(a, approvals);
+  });
+  
+  // Check for ongoing drain activity (within last 7 days)
+  const sevenDaysAgo = currentTimestamp - (7 * 24 * 60 * 60);
+  const hasOngoingDrains = tokenTransfers.some(t => {
+    if (t.from.toLowerCase() !== normalized) return false;
+    if (t.timestamp < sevenDaysAgo) return false;
+    const isMaliciousDest = isMaliciousAddress(t.to.toLowerCase(), chain) || 
+                            isDrainerRecipient(t.to.toLowerCase());
+    return isMaliciousDest;
+  });
+  
+  // Find last malicious activity timestamp
+  const maliciousTxTimestamps = [
+    ...evidence.filter(e => e.timestamp).map(e => new Date(e.timestamp!).getTime() / 1000),
+    ...tokenTransfers
+      .filter(t => isMaliciousAddress(t.to.toLowerCase(), chain) || isDrainerRecipient(t.to.toLowerCase()))
+      .map(t => t.timestamp)
+  ];
+  const lastMaliciousActivity = maliciousTxTimestamps.length > 0 
+    ? new Date(Math.max(...maliciousTxTimestamps) * 1000).toISOString()
+    : undefined;
+  const daysSinceLastIncident = lastMaliciousActivity 
+    ? Math.floor((currentTimestamp - Math.max(...maliciousTxTimestamps)) / (24 * 60 * 60))
+    : undefined;
+  
+  // Build historical compromise info
+  const hasHistoricalIncident = evidence.length > 0 || airdropIncident !== null;
+  const isCurrentlyActive = activeThreats.length > 0 || hasActiveMaliciousApproval || hasOngoingDrains;
+  
+  const historicalCompromise = hasHistoricalIncident ? {
+    hasHistoricalIncident: true,
+    isCurrentlyActive,
+    incidents: airdropIncident ? [{
+      type: airdropIncident.type,
+      timestamp: airdropIncident.timestamp,
+      txHash: airdropIncident.txHash,
+      maliciousAddress: airdropIncident.maliciousAddress,
+      explanation: airdropIncident.explanation,
+      approvalStillActive: airdropIncident.approvalStillActive,
+      chain: airdropIncident.chain,
+    }] : [],
+    remediationStatus: {
+      allApprovalsRevoked: !hasActiveMaliciousApproval,
+      noActiveDrainerAccess: !hasActiveMaliciousApproval,
+      noOngoingDrains: !hasOngoingDrains,
+      lastMaliciousActivity,
+      daysSinceLastIncident,
+    },
+  } : undefined;
+
+  // ============================================
+  // DETERMINE FINAL STATUS (with historical awareness)
+  // ============================================
+  const { status, confidence, summary } = determineSecurityStatusWithHistory(
     evidence,
     reasonCodes,
     safetyChecks,
-    safetyBlockers
+    safetyBlockers,
+    activeThreats,
+    historicalThreats,
+    historicalCompromise
   );
 
   return {
@@ -309,8 +629,11 @@ export async function analyzeWalletCompromise(
     confidence,
     summary,
     safetyChecks,
-    canBeSafe: safetyChecks.allChecksPass && safetyBlockers.length === 0,
+    canBeSafe: safetyChecks.allChecksPass && safetyBlockers.length === 0 && activeThreats.length === 0,
     safetyBlockers,
+    historicalCompromise,
+    activeThreats,
+    historicalThreats,
   };
 }
 
@@ -331,6 +654,22 @@ function analyzeApprovals(
   for (const approval of approvals) {
     const spenderNormalized = approval.spender.toLowerCase();
     
+    // ============================================
+    // FIRST: Skip protected infrastructure entirely
+    // ============================================
+    const trustInfo = classifyDestinationTrust(spenderNormalized);
+    if (trustInfo.isTrusted) {
+      console.log(`[analyzeApprovals] Spender ${spenderNormalized.slice(0, 10)}... is trusted (${trustInfo.category}) - skipping`);
+      continue;
+    }
+    
+    // Also check infrastructure protection
+    const infraCheck = checkInfrastructureProtection(spenderNormalized, 'ethereum');
+    if (infraCheck.isProtected) {
+      console.log(`[analyzeApprovals] Spender ${spenderNormalized.slice(0, 10)}... is protected infrastructure (${infraCheck.name}) - skipping`);
+      continue;
+    }
+    
     // CHECK 1: Unlimited approval to EOA (not a contract)
     if (approval.isUnlimited && approval.spenderIsEOA) {
       evidence.push({
@@ -341,14 +680,24 @@ function analyzeApprovals(
         relatedAddress: spenderNormalized,
         timestamp: new Date(approval.timestamp * 1000).toISOString(),
         confidence: 95,
+        isHistorical: false,
+        isActiveThreat: true,
       });
       reasonCodes.push('UNLIMITED_APPROVAL_EOA');
       blockers.push(`Unlimited approval to EOA: ${spenderNormalized.slice(0, 10)}...`);
     }
 
     // CHECK 2: Unlimited approval to unverified contract
-    if (approval.isUnlimited && !approval.spenderIsVerified && !isSafeContract(spenderNormalized)) {
-      if (!isLegitimateContract(spenderNormalized) && !isDeFiProtocol(spenderNormalized)) {
+    // Only flag if it's NOT a known safe/legitimate contract
+    if (approval.isUnlimited && !approval.spenderIsVerified) {
+      const isSafe = isSafeContract(spenderNormalized) || 
+                     isLegitimateContract(spenderNormalized) || 
+                     isDeFiProtocol(spenderNormalized) ||
+                     isENSContract(spenderNormalized) ||
+                     isInfrastructureContract(spenderNormalized) ||
+                     isNFTMarketplace(spenderNormalized);
+      
+      if (!isSafe) {
         evidence.push({
           code: 'UNLIMITED_APPROVAL_UNVERIFIED',
           severity: 'HIGH',
@@ -357,6 +706,8 @@ function analyzeApprovals(
           relatedAddress: spenderNormalized,
           timestamp: new Date(approval.timestamp * 1000).toISOString(),
           confidence: 80,
+          isHistorical: false,
+          isActiveThreat: true,
         });
         reasonCodes.push('UNLIMITED_APPROVAL_UNVERIFIED');
         blockers.push(`Unlimited approval to unverified contract: ${spenderNormalized.slice(0, 10)}...`);
@@ -975,6 +1326,140 @@ function determineSecurityStatus(
 }
 
 // ============================================
+// DETERMINE FINAL STATUS WITH HISTORICAL AWARENESS
+// ============================================
+// Key distinction:
+// - ACTIVELY_COMPROMISED: Ongoing threat (active approvals, drainer access, ongoing drains)
+// - PREVIOUSLY_COMPROMISED: Historical incident but threat remediated
+// - SAFE: No history of compromise
+
+function determineSecurityStatusWithHistory(
+  evidence: CompromiseEvidence[],
+  reasonCodes: CompromiseReasonCode[],
+  safetyChecks: SafetyCheckResults,
+  safetyBlockers: string[],
+  activeThreats: CompromiseEvidence[],
+  historicalThreats: CompromiseEvidence[],
+  historicalCompromise?: CompromiseAnalysisResult['historicalCompromise']
+): { status: SecurityStatus; confidence: number; summary: string } {
+  
+  // ============================================
+  // RULE 1: ACTIVE THREATS = ACTIVELY_COMPROMISED
+  // ============================================
+  // A wallet should be marked ACTIVELY_COMPROMISED only if:
+  // - Active unlimited or high-risk approval exists
+  // - Known drainer contract still has allowance
+  // - Automated outflows continue without user initiation
+  
+  if (activeThreats.length > 0) {
+    const criticalActive = activeThreats.filter(e => e.severity === 'CRITICAL').length;
+    const highActive = activeThreats.filter(e => e.severity === 'HIGH').length;
+    
+    if (criticalActive >= 1) {
+      return {
+        status: 'ACTIVELY_COMPROMISED',
+        confidence: 95,
+        summary: `ACTIVELY COMPROMISED: ${criticalActive} critical active threat(s). Immediate action required - revoke approvals and secure assets.`,
+      };
+    }
+    
+    if (highActive >= 1) {
+      return {
+        status: 'ACTIVELY_COMPROMISED',
+        confidence: 85,
+        summary: `ACTIVELY COMPROMISED: ${highActive} high-severity active threat(s). Review and revoke suspicious approvals immediately.`,
+      };
+    }
+    
+    // Medium/low active threats = AT_RISK
+    return {
+      status: 'AT_RISK',
+      confidence: 70,
+      summary: `At Risk: ${activeThreats.length} active concern(s) detected. Review the flagged items and take action if needed.`,
+    };
+  }
+  
+  // ============================================
+  // RULE 2: HISTORICAL THREATS ONLY = PREVIOUSLY_COMPROMISED
+  // ============================================
+  // If historical exploit occurred but:
+  // - All related approvals are revoked
+  // - No malicious allowance remains
+  // - No follow-up draining behavior exists
+  // Then: PREVIOUSLY_COMPROMISED (NO ACTIVE THREAT)
+  //
+  // IMPORTANT: Only count MEDIUM/HIGH/CRITICAL severity as real threats
+  // LOW severity is informational only and should NOT trigger this status
+  
+  const significantHistoricalThreats = historicalThreats.filter(t => 
+    t.severity === 'CRITICAL' || t.severity === 'HIGH' || t.severity === 'MEDIUM'
+  );
+  
+  if (significantHistoricalThreats.length > 0 && historicalCompromise) {
+    const remediation = historicalCompromise.remediationStatus;
+    const isFullyRemediated = remediation.allApprovalsRevoked && 
+                              remediation.noActiveDrainerAccess && 
+                              remediation.noOngoingDrains;
+    
+    if (isFullyRemediated) {
+      const daysSince = remediation.daysSinceLastIncident || 0;
+      const incidentCount = historicalCompromise.incidents.length;
+      
+      // Calculate decayed risk based on time since incident
+      // Risk decays over time: 90% after 7 days, 50% after 30 days, 20% after 90 days
+      let decayedConfidence = 60;
+      if (daysSince > 90) decayedConfidence = 20;
+      else if (daysSince > 30) decayedConfidence = 35;
+      else if (daysSince > 7) decayedConfidence = 50;
+      
+      return {
+        status: 'PREVIOUSLY_COMPROMISED',
+        confidence: decayedConfidence,
+        summary: `Previously compromised. No active malicious access detected. ${incidentCount > 0 ? `Historical incident${incidentCount > 1 ? 's' : ''} detected but all threats have been remediated.` : ''} ${daysSince > 0 ? `Last incident: ${daysSince} days ago.` : ''} Safe to use with caution.`,
+      };
+    } else {
+      // Not fully remediated - still has active elements
+      return {
+        status: 'AT_RISK',
+        confidence: 75,
+        summary: `Historical compromise detected with incomplete remediation. Review: ${!remediation.allApprovalsRevoked ? 'Malicious approvals still active. ' : ''}${!remediation.noOngoingDrains ? 'Recent drain activity detected.' : ''}`,
+      };
+    }
+  }
+  
+  // ============================================
+  // RULE 3: CHECK FOR ANY HISTORICAL INCIDENTS WITHOUT ACTIVE THREATS
+  // ============================================
+  // Only trigger PREVIOUSLY_COMPROMISED if there are significant historical threats
+  // LOW severity evidence alone should NOT trigger this status
+  if (significantHistoricalThreats.length > 0 && historicalCompromise?.hasHistoricalIncident && !historicalCompromise.isCurrentlyActive) {
+    const daysSince = historicalCompromise.remediationStatus.daysSinceLastIncident || 0;
+    
+    return {
+      status: 'PREVIOUSLY_COMPROMISED',
+      confidence: daysSince > 30 ? 30 : 50,
+      summary: `Previously compromised. All malicious access has been revoked. ${daysSince > 0 ? `No suspicious activity in ${daysSince} days.` : ''} Wallet is currently safe to use.`,
+    };
+  }
+  
+  // ============================================
+  // RULE 4: NO THREATS = SAFE
+  // ============================================
+  if (evidence.length === 0 && safetyBlockers.length === 0) {
+    return {
+      status: 'SAFE',
+      confidence: 95,
+      summary: 'No risk indicators detected. Wallet appears safe based on available data.',
+    };
+  }
+  
+  // ============================================
+  // RULE 5: FALLBACK - USE ORIGINAL LOGIC FOR EDGE CASES
+  // ============================================
+  return determineSecurityStatus(evidence, reasonCodes, safetyChecks, safetyBlockers);
+}
+
+// ============================================
 // EXPORTS
 // ============================================
 
@@ -983,5 +1468,8 @@ export {
   RAPID_DRAIN_WINDOW_SECONDS,
   MULTI_ASSET_DRAIN_WINDOW_SECONDS,
   UNLIMITED_APPROVAL_THRESHOLD,
+  isApprovalStillActive,
+  classifyThreatTiming,
+  detectAirdropDrainIncident,
 };
 

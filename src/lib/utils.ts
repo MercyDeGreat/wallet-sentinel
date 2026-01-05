@@ -139,10 +139,12 @@ export function getRiskLevelBgColor(level: RiskLevel): string {
 export function getSecurityStatusColor(status: SecurityStatus): string {
   const colors: Record<SecurityStatus, string> = {
     SAFE: 'text-status-safe',
+    PREVIOUSLY_COMPROMISED: 'text-amber-400', // Amber for historical (cautionary but not danger)
     POTENTIALLY_COMPROMISED: 'text-orange-400',
     AT_RISK: 'text-status-warning',
-    COMPROMISED: 'text-status-danger',
-    INCOMPLETE_DATA: 'text-gray-400', // Neutral gray for incomplete data
+    ACTIVELY_COMPROMISED: 'text-status-danger',
+    COMPROMISED: 'text-status-danger', // Legacy - maps to ACTIVELY_COMPROMISED
+    INCOMPLETE_DATA: 'text-gray-400',
   };
   return colors[status];
 }

@@ -14,17 +14,70 @@
 export type Chain = 'ethereum' | 'base' | 'bnb' | 'solana';
 
 // Security status levels
-// CRITICAL: SAFE is ONLY allowed when ALL of the following are true:
-// - Zero malicious approvals
-// - Zero attacker-linked transactions
-// - Zero unexplained asset loss
-// - Zero indirect exposure to confirmed drainers
+// CRITICAL: Distinguish between HISTORICAL and ACTIVE compromise
+// - Historical: Past exploit occurred but all malicious access revoked
+// - Active: Ongoing threat with active approvals or drainer access
 export type SecurityStatus = 
-  | 'SAFE'                      // Absolutely no risk indicators (strict verification required)
+  | 'SAFE'                      // No risk indicators, no historical compromise
+  | 'PREVIOUSLY_COMPROMISED'    // Historical exploit, but NO active threat (all revoked)
   | 'POTENTIALLY_COMPROMISED'   // At least one concrete risk signal exists
   | 'AT_RISK'                   // Active risk indicators present
-  | 'COMPROMISED'               // Confirmed compromise evidence
+  | 'ACTIVELY_COMPROMISED'      // Confirmed ACTIVE compromise (ongoing threat)
+  | 'COMPROMISED'               // Legacy: maps to ACTIVELY_COMPROMISED
   | 'INCOMPLETE_DATA';          // Analysis could not complete (RPC failure, partial history)
+
+// Historical compromise information
+export interface HistoricalCompromiseInfo {
+  // Was this wallet ever compromised?
+  hasHistoricalCompromise: boolean;
+  
+  // Details of the historical incident(s)
+  incidents: HistoricalIncident[];
+  
+  // Is the threat currently active?
+  isCurrentlyActive: boolean;
+  
+  // Why is it no longer active?
+  remediationStatus?: {
+    allApprovalsRevoked: boolean;
+    noActiveDrainerAccess: boolean;
+    noOngoingDrains: boolean;
+    lastMaliciousActivity?: string; // ISO timestamp
+    daysSinceLastIncident?: number;
+  };
+}
+
+export interface HistoricalIncident {
+  // What happened
+  type: 'AIRDROP_DRAIN' | 'APPROVAL_EXPLOIT' | 'PHISHING' | 'SWEEPER_ATTACK' | 'UNKNOWN';
+  
+  // When it happened
+  timestamp: string;
+  
+  // Transaction hash of the exploit
+  txHash: string;
+  
+  // What was lost
+  assetsLost?: {
+    token: string;
+    symbol: string;
+    amount: string;
+    valueAtTime?: string;
+  }[];
+  
+  // The malicious contract/address involved
+  maliciousAddress: string;
+  maliciousContractName?: string;
+  
+  // Chain where it occurred
+  chain: Chain;
+  
+  // Is the related approval still active?
+  approvalStillActive: boolean;
+  
+  // Human-readable explanation
+  explanation: string;
+}
 
 // Analysis completeness - tracks whether we have full data to make a determination
 export type AnalysisCompleteness = 
@@ -73,6 +126,12 @@ export interface CompromiseEvidence {
   relatedAddress?: string;
   timestamp?: string;
   confidence: number; // 0-100
+  
+  // Historical vs Active classification
+  isHistorical: boolean;        // True if this is a past incident with no active threat
+  isActiveThreat: boolean;      // True if threat is currently active
+  wasRemediated?: boolean;      // True if the issue was fixed (approval revoked, etc.)
+  remediationDetails?: string;  // How it was fixed
 }
 
 // ============================================

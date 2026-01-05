@@ -2413,6 +2413,17 @@ export class EVMAnalyzer {
     const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
     
     // ============================================
+    // CRITICAL RULE 0: CRITICAL threats ALWAYS override everything
+    // ============================================
+    // If we detected CRITICAL threats (e.g., wallet is a known drainer),
+    // that takes absolute priority over compromise analysis
+    const criticalThreats = safeThreats.filter(t => t?.severity === 'CRITICAL');
+    if (criticalThreats.length > 0) {
+      console.log(`[SECURITY] ${criticalThreats.length} CRITICAL threat(s) detected - marking ACTIVELY_COMPROMISED`);
+      return 'ACTIVELY_COMPROMISED';
+    }
+    
+    // ============================================
     // CRITICAL RULE: 0 threats + 0 risk score = SAFE
     // ============================================
     // This MUST be checked first to prevent false "potentially compromised" states
@@ -2423,16 +2434,48 @@ export class EVMAnalyzer {
     }
     
     // ============================================
-    // RULE 1: Compromise analysis takes priority (only for actual risks)
+    // RULE 1: Handle new status types from compromise analysis
+    // ============================================
+    
+    // ACTIVELY_COMPROMISED: Ongoing active threat - immediate action required
+    if (compromiseAnalysis.securityStatus === 'ACTIVELY_COMPROMISED') {
+      console.log(`[SECURITY] Wallet marked ACTIVELY_COMPROMISED: ${compromiseAnalysis.summary}`);
+      return 'ACTIVELY_COMPROMISED';
+    }
+    
+    // PREVIOUSLY_COMPROMISED: Historical incident but no active threat
+    if (compromiseAnalysis.securityStatus === 'PREVIOUSLY_COMPROMISED') {
+      console.log(`[SECURITY] Wallet marked PREVIOUSLY_COMPROMISED: ${compromiseAnalysis.summary}`);
+      return 'PREVIOUSLY_COMPROMISED';
+    }
+    
+    // ============================================
+    // RULE 2: HIGH severity threats = AT_RISK
+    // ============================================
+    const highThreats = safeThreats.filter(t => t?.severity === 'HIGH');
+    if (highThreats.length > 0) {
+      console.log(`[SECURITY] ${highThreats.length} HIGH threat(s) detected - marking AT_RISK`);
+      return 'AT_RISK';
+    }
+    
+    // ============================================
+    // RULE 3: Compromise analysis takes priority (only for actual risks)
     // ============================================
     if (compromiseAnalysis.securityStatus === 'COMPROMISED') {
       console.log(`[SECURITY] Wallet marked COMPROMISED by compromise analysis: ${compromiseAnalysis.summary}`);
-      return 'COMPROMISED';
+      return 'ACTIVELY_COMPROMISED'; // Map legacy COMPROMISED to ACTIVELY_COMPROMISED
     }
     
     if (compromiseAnalysis.securityStatus === 'AT_RISK') {
       console.log(`[SECURITY] Wallet marked AT_RISK by compromise analysis: ${compromiseAnalysis.summary}`);
       return 'AT_RISK';
+    }
+    
+    // SAFE from compromise analysis - but only if no significant threats exist
+    // The compromise analysis has already done all the necessary checks
+    if (compromiseAnalysis.securityStatus === 'SAFE') {
+      console.log(`[SECURITY] Compromise analysis returned SAFE - trusting that determination`);
+      return 'SAFE';
     }
     
     // POTENTIALLY_COMPROMISED requires at least one concrete risk signal
@@ -2450,86 +2493,41 @@ export class EVMAnalyzer {
       } else {
         // No concrete evidence - treat as SAFE
         console.log(`[SECURITY] Compromise analysis returned POTENTIALLY_COMPROMISED but no concrete evidence found - treating as SAFE`);
+        return 'SAFE';
       }
     }
     
     // ============================================
-    // RULE 2: Threats with appropriate severity = not safe
+    // FALLBACK RULES: Only apply if compromise analysis didn't give a clear answer
     // ============================================
-    // IMPORTANT: Only CRITICAL/HIGH threats should affect status
-    // MEDIUM/LOW threats alone should NOT prevent SAFE status
-    // This prevents false positives from weak signals
+    
+    // If we got here without a clear determination, use threat-based rules
     if (safeThreats.length > 0) {
       const hasCritical = safeThreats.some(t => t?.severity === 'CRITICAL');
       const hasHigh = safeThreats.some(t => t?.severity === 'HIGH');
-      const hasMedium = safeThreats.some(t => t?.severity === 'MEDIUM');
       
       if (hasCritical) {
-        return 'COMPROMISED';
+        return 'ACTIVELY_COMPROMISED';
       }
       if (hasHigh) {
         return 'AT_RISK';
       }
-      // Multiple MEDIUM threats = AT_RISK
-      const mediumCount = safeThreats.filter(t => t?.severity === 'MEDIUM').length;
-      if (mediumCount >= 3) {
-        return 'AT_RISK';
-      }
-      // Single MEDIUM or LOW threats = POTENTIALLY_COMPROMISED at most
-      // But if compromise analysis already passed, trust it
-      if (hasMedium && compromiseAnalysis.securityStatus !== 'SAFE') {
-        return 'POTENTIALLY_COMPROMISED';
-      }
-      // LOW severity threats alone = can still be SAFE
-      console.log(`[SECURITY] Only low severity threats found (${safeThreats.length}) - not blocking SAFE status`);
+      // MEDIUM/LOW threats alone = SAFE (they're informational only)
+      console.log(`[SECURITY] Only medium/low severity threats found - not blocking SAFE status`);
     }
     
-    // ============================================
-    // RULE 3: Risk score thresholds
-    // ============================================
+    // If risk score is very high, that's a signal
     if (riskScore >= 50) {
-      return 'COMPROMISED';
+      return 'ACTIVELY_COMPROMISED';
     }
-    if (riskScore >= 15) {
+    if (riskScore >= 25) {
       return 'AT_RISK';
     }
     
     // ============================================
-    // RULE 4: Safety blockers check (only high-confidence blockers)
+    // DEFAULT: No threats, no risks = SAFE
     // ============================================
-    // If compromise analysis returned SAFE, trust it even if there are minor blockers
-    // This prevents over-aggressive false positives
-    if (!compromiseAnalysis.canBeSafe && compromiseAnalysis.securityStatus !== 'SAFE') {
-      console.log(`[SECURITY] Cannot mark SAFE - blockers: ${compromiseAnalysis.safetyBlockers.join(', ')}`);
-      return 'AT_RISK';
-    }
-    
-    // ============================================
-    // RULE 5: Critical safety checks must pass
-    // ============================================
-    // Only fail on CRITICAL safety issues, not all checks
-    // This prevents false positives from weak signals
-    const hasCriticalFailure = 
-      !compromiseAnalysis.safetyChecks.noMaliciousApprovals || // Malicious approvals = critical
-      !compromiseAnalysis.safetyChecks.noAttackerLinkedTxs;    // Attacker interaction = critical
-    
-    if (hasCriticalFailure && compromiseAnalysis.securityStatus !== 'SAFE') {
-      const failedChecks: string[] = [];
-      if (!compromiseAnalysis.safetyChecks.noMaliciousApprovals) failedChecks.push('malicious approvals');
-      if (!compromiseAnalysis.safetyChecks.noAttackerLinkedTxs) failedChecks.push('attacker-linked txs');
-      
-      console.log(`[SECURITY] Critical safety checks failed: ${failedChecks.join(', ')}`);
-      return 'AT_RISK';
-    }
-    
-    // Non-critical failures (unexplained loss, timing anomalies) should not block SAFE
-    // These are often false positives from normal user activity
-    
-    // ============================================
-    // FINAL CHECK: Would this wallet still be safe
-    // if the owner lost control of approvals?
-    // ============================================
-    console.log(`[SECURITY] All checks passed - wallet is SAFE`);
+    console.log(`[SECURITY] No significant threats found - wallet is SAFE`);
     return 'SAFE';
   }
 
@@ -2674,6 +2672,13 @@ export class EVMAnalyzer {
     }
     
     // ============================================
+    // PREVIOUSLY_COMPROMISED - Historical incident, no active threat
+    // ============================================
+    if (status === 'PREVIOUSLY_COMPROMISED') {
+      return 'Previously compromised. No active malicious access detected. All related approvals have been revoked. Safe to use with caution.';
+    }
+    
+    // ============================================
     // INCOMPLETE DATA - Only when data is actually missing
     // ============================================
     if (status === 'INCOMPLETE_DATA') {
@@ -2694,11 +2699,24 @@ export class EVMAnalyzer {
       }
       return `${safeThreats.length} indicator(s) require review. Check the detected issues and take action if needed.`;
     }
+    
     if (status === 'AT_RISK') {
       const safeThreats = Array.isArray(threats) ? threats : [];
       return `${safeThreats.length} potential security concern(s) detected. Review the identified risks and consider taking action.`;
     }
     
+    // ============================================
+    // ACTIVELY_COMPROMISED - Ongoing active threat
+    // ============================================
+    if (status === 'ACTIVELY_COMPROMISED') {
+      const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+      const activeThreats = safeThreats.filter(t => !t.isHistorical);
+      return `🚨 ACTIVELY COMPROMISED: ${activeThreats.length} active threat(s) detected. Malicious access is still present. Revoke approvals and secure assets IMMEDIATELY.`;
+    }
+    
+    // ============================================
+    // COMPROMISED (legacy) - Maps to ACTIVELY_COMPROMISED
+    // ============================================
     const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
     const drainerThreats = safeThreats.filter(t => t?.type === 'WALLET_DRAINER' || t?.type === 'PRIVATE_KEY_LEAK');
     if (drainerThreats.length > 0) {
