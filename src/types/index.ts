@@ -183,6 +183,9 @@ export type WalletRole =
   | 'INFRASTRUCTURE'      // DEX, bridge, router - neutral intermediary
   | 'SERVICE_RECEIVER'    // Receives fees/payments from many sources (NOT malicious)
   | 'INDIRECT_EXPOSURE'   // Had contact with compromised wallet but no malicious behavior
+  | 'SELF_MANAGED'        // Auto-forwarding wallet managed by owner (NOT compromised)
+  | 'AUTO_FORWARDING'     // Wallet that consistently forwards funds to same address
+  | 'POWER_USER'          // High-frequency trader/user with legitimate activity
   | 'UNKNOWN';            // Insufficient data to classify
 
 // ============================================

@@ -475,6 +475,17 @@ export class EVMAnalyzer {
   // ============================================
   // DETECTION: SWEEPER BOT (Private Key Compromise)
   // ============================================
+  // 
+  // CRITICAL FALSE POSITIVE PREVENTION:
+  // DO NOT flag as sweeper bot when:
+  // 1. Wallet is self-managed (consistent auto-forwarding to SAME address)
+  // 2. Outgoing transactions are to known infrastructure (ENS, routers, exchanges)
+  // 3. No evidence of malicious approvals or drainer interactions
+  //
+  // ONLY flag as sweeper when:
+  // 1. Outflows are preceded by malicious approvals/drainer calls
+  // 2. Funds go to MULTIPLE different unknown addresses (indicates loss of control)
+  // 3. Pattern matches known attacker behavior
 
   private detectSweeperBot(
     transactions: TransactionData[],
@@ -482,22 +493,6 @@ export class EVMAnalyzer {
     currentBalance: string,
     userAddress: string
   ): DetectedThreat | null {
-    // ============================================
-    // CRITICAL FALSE POSITIVE PREVENTION
-    // ============================================
-    // A wallet is NOT a sweeper bot victim if outgoing funds go to:
-    // - Safe contracts (OpenSea, Uniswap, Aave, Lido, etc.)
-    // - Known exchanges (Binance, Coinbase, Kraken, etc.)
-    // - DeFi protocols, NFT marketplaces, bridges
-    // - ENS contracts
-    // 
-    // Quick outflows are NORMAL user behavior when:
-    // - User is swapping tokens on DEX
-    // - User is buying NFTs
-    // - User is depositing to exchange
-    // - User is bridging funds
-    // - User is staking
-
     if (transactions.length < 4) return null;
 
     // Parse current balance
@@ -584,20 +579,74 @@ export class EVMAnalyzer {
     timeline.sort((a, b) => a.timestamp - b.timestamp);
 
     // ============================================
-    // FIRST: Check if ALL outgoing transactions go to legitimate destinations
-    // If yes, this is NOT a sweeper victim - it's normal user activity
+    // CHECK 1: Legitimate destination ratio
+    // If > 70% of outgoing transactions go to legitimate destinations, NOT a sweeper victim
     // ============================================
     const outgoingTxs = timeline.filter(t => t.type === 'out');
     const legitimateOutgoingCount = outgoingTxs.filter(t => isLegitimateDestination(t.to, t.methodId)).length;
     const legitimateRatio = outgoingTxs.length > 0 ? legitimateOutgoingCount / outgoingTxs.length : 1;
     
-    // If > 70% of outgoing transactions go to legitimate destinations, NOT a sweeper victim
     if (legitimateRatio > 0.7) {
       console.log(`[detectSweeperBot] ${userAddress}: ${(legitimateRatio * 100).toFixed(0)}% outgoing to legitimate destinations - NOT a sweeper victim`);
       return null;
     }
 
-    // Detect sweep pattern: incoming followed by outgoing within 60 minutes to UNKNOWN address
+    // ============================================
+    // CHECK 2: SELF-MANAGED AUTO-FORWARDING DETECTION
+    // If funds consistently go to the SAME address, this is self-managed behavior
+    // NOT a sweeper bot (sweepers go to attacker's wallet, not a consistent address)
+    // ============================================
+    const outgoingDestinations = outgoingTxs.map(t => t.to.toLowerCase());
+    const destinationCounts = new Map<string, number>();
+    for (const dest of outgoingDestinations) {
+      destinationCounts.set(dest, (destinationCounts.get(dest) || 0) + 1);
+    }
+    
+    // Find the most common destination
+    let primaryDestination = '';
+    let primaryDestinationCount = 0;
+    for (const [dest, count] of destinationCounts) {
+      if (count > primaryDestinationCount) {
+        primaryDestination = dest;
+        primaryDestinationCount = count;
+      }
+    }
+    
+    // If > 80% of outgoing transactions go to the SAME address, this is AUTO-FORWARDING
+    // (self-managed wallet that forwards funds to a primary address)
+    const autoForwardRatio = outgoingTxs.length > 0 ? primaryDestinationCount / outgoingTxs.length : 0;
+    const uniqueDestinations = destinationCounts.size;
+    
+    if (autoForwardRatio > 0.8 && uniqueDestinations <= 3) {
+      console.log(`[detectSweeperBot] ${userAddress}: Auto-forwarding pattern detected (${(autoForwardRatio * 100).toFixed(0)}% to ${primaryDestination.slice(0, 10)}...) - SELF-MANAGED, not sweeper`);
+      return null;
+    }
+
+    // ============================================
+    // CHECK 3: MALICIOUS APPROVAL REQUIREMENT
+    // Only flag as sweeper if there's evidence of malicious activity
+    // (approvals to drainers, interactions with known malicious contracts)
+    // ============================================
+    const hasMaliciousApprovals = transactions.some(tx => {
+      if (!tx.input || tx.input.length < 10) return false;
+      const methodId = tx.input.slice(0, 10).toLowerCase();
+      // Check for approve() calls
+      if (methodId === '0x095ea7b3' || methodId === '0xa22cb465') {
+        // Check if spender is a known drainer
+        const spender = tx.input.slice(34, 74).toLowerCase();
+        return isMaliciousAddress(`0x${spender}`, this.chain) !== null || isDrainerRecipient(`0x${spender}`);
+      }
+      return false;
+    });
+
+    const hasDrainerInteraction = transactions.some(tx => {
+      if (!tx?.to) return false;
+      return isMaliciousAddress(tx.to, this.chain) !== null || isDrainerRecipient(tx.to);
+    });
+
+    // ============================================
+    // CHECK 4: Sweep pattern detection (ONLY if malicious indicators present)
+    // ============================================
     const sweepEvents: { inTx: string; outTx: string; sweeperAddress: string; timeDelta: number; confidence?: number }[] = [];
     const sweeperAddresses: Record<string, number> = {};
 
@@ -613,7 +662,7 @@ export class EVMAnalyzer {
         
         // CRITICAL: Skip if destination is legitimate
         if (isLegitimateDestination(next.to, next.methodId)) {
-          continue; // This is normal user activity (swap, deposit, mint, etc.)
+          continue;
         }
         
         const timeDelta = next.timestamp - current.timestamp;
@@ -636,9 +685,8 @@ export class EVMAnalyzer {
       }
     }
 
-    // STRICTER: Require higher score (2.5+) and multiple sweep events to UNKNOWN addresses
+    // Find potential sweeper with high confidence
     const confirmedSweeper = Object.entries(sweeperAddresses).find(([addr, score]) => {
-      // Must have score >= 2.5 AND destination must NOT be legitimate
       return score >= 2.5 && !isLegitimateDestination(addr);
     });
 
@@ -649,25 +697,53 @@ export class EVMAnalyzer {
       const relevantEvents = sweepEvents.filter(e => e.sweeperAddress === sweeperAddress);
       const sweepCount = relevantEvents.length;
       
-      // ADDITIONAL CHECK: Must have at least 3 sweep events to be confident
+      // Must have at least 3 sweep events
       if (sweepCount < 3) {
         console.log(`[detectSweeperBot] ${userAddress}: Only ${sweepCount} sweep events - insufficient for sweeper classification`);
+        return null;
+      }
+
+      // ============================================
+      // FINAL CHECK: Require malicious evidence OR multiple destinations
+      // ============================================
+      // If NO malicious approvals AND NO drainer interaction AND funds go to SINGLE address
+      // → This is likely SELF-MANAGED, not a sweeper victim
+      if (!hasMaliciousApprovals && !hasDrainerInteraction && uniqueDestinations <= 2) {
+        console.log(`[detectSweeperBot] ${userAddress}: No malicious approvals/drainer interaction and only ${uniqueDestinations} destinations - likely SELF-MANAGED auto-forwarding wallet`);
+        return null;
+      }
+
+      // Check if sweeper address is a known drainer
+      const sweeperIsDrainer = isMaliciousAddress(sweeperAddress, this.chain) !== null || isDrainerRecipient(sweeperAddress);
+      
+      // If sweeper is NOT a known drainer AND no other malicious indicators → NOT a sweeper
+      if (!sweeperIsDrainer && !hasMaliciousApprovals && !hasDrainerInteraction) {
+        console.log(`[detectSweeperBot] ${userAddress}: Destination ${sweeperAddress.slice(0, 10)}... is not a known drainer and no malicious activity detected - NOT flagging as sweeper`);
         return null;
       }
       
       const avgTimeDelta = relevantEvents.reduce((sum, e) => sum + e.timeDelta, 0) / sweepCount;
 
+      // Determine severity based on evidence
+      const severity = (hasMaliciousApprovals || hasDrainerInteraction || sweeperIsDrainer) ? 'CRITICAL' : 'HIGH';
+      const title = sweeperIsDrainer 
+        ? '🚨 SWEEPER BOT DETECTED - Private Key Compromised'
+        : '⚠️ Suspicious Outflow Pattern Detected';
+      const description = sweeperIsDrainer
+        ? `Your wallet is being monitored by an automated sweeper bot. Any funds sent to this wallet are immediately stolen (average sweep time: ${Math.round(avgTimeDelta)} seconds). The attacker has your private key. ${sweepCount} sweep events detected. DO NOT send any more funds to this wallet.`
+        : `Unusual rapid outflow pattern detected. Funds are being sent to unknown addresses shortly after receipt. If you are NOT intentionally forwarding funds, your wallet may be compromised. Review your security.`;
+
       return {
         id: `sweeper-bot-${Date.now()}`,
         type: 'PRIVATE_KEY_LEAK',
-        severity: 'CRITICAL',
-        title: '🚨 SWEEPER BOT DETECTED - Private Key Compromised',
-        description: `Your wallet is being monitored by an automated sweeper bot. Any funds sent to this wallet are immediately stolen (average sweep time: ${Math.round(avgTimeDelta)} seconds). The attacker has your private key. ${sweepCount} sweep events detected. DO NOT send any more funds to this wallet.`,
-        technicalDetails: `Sweeper Address: ${sweeperAddress}\nSweep Events: ${sweepCount}\nAverage Response Time: ${Math.round(avgTimeDelta)}s\nWallet Empty: ${isCurrentlyEmpty ? 'Yes' : 'No'}`,
+        severity,
+        title,
+        description,
+        technicalDetails: `Destination Address: ${sweeperAddress}\nSweep Events: ${sweepCount}\nAverage Response Time: ${Math.round(avgTimeDelta)}s\nWallet Empty: ${isCurrentlyEmpty ? 'Yes' : 'No'}\nMalicious Approvals: ${hasMaliciousApprovals ? 'Yes' : 'No'}\nDrainer Interaction: ${hasDrainerInteraction ? 'Yes' : 'No'}\nKnown Drainer Destination: ${sweeperIsDrainer ? 'Yes' : 'No'}`,
         detectedAt: new Date().toISOString(),
         relatedAddresses: [sweeperAddress],
         relatedTransactions: sweepEvents.map(e => e.outTx).slice(0, 10),
-        ongoingRisk: true,
+        ongoingRisk: sweeperIsDrainer || hasMaliciousApprovals,
         attackerInfo: {
           address: sweeperAddress,
           type: 'SWEEPER_BOT',
