@@ -46,8 +46,10 @@ export interface AddressClassification {
 // SWEEPER BOT SIGNALS
 // ============================================
 // Multiple independent signals required for sweeper classification
+// CRITICAL: Behavioral signals are PRIMARY - don't rely only on known addresses!
 
 export interface SweeperSignals {
+  // Label-based signals (secondary)
   hasKnownDrainerInteraction: boolean;
   hasUnauthorizedApprovals: boolean;
   hasPermitAbuse: boolean;
@@ -56,8 +58,339 @@ export interface SweeperSignals {
   hasMaliciousContractCall: boolean;
   forwardsToMultipleUnknownAddresses: boolean;
   destinationIsKnownDrainer: boolean;
+  
+  // BEHAVIORAL SIGNALS (primary - do NOT rely on known address lists)
+  hasImmediateOutboundPattern: boolean;     // OUT tx within 60s of IN tx
+  hasRepeatedSweepPattern: boolean;         // Pattern repeats across multiple blocks
+  hasConcentratedDestinations: boolean;     // Most OUT goes to small set (≤3 addresses)
+  hasAutomatedTimingPattern: boolean;       // Sub-60s response times consistently
+  hasNearEmptyWalletState: boolean;         // Wallet balance approaches 0 after sweeps
+  hasZeroHumanInteraction: boolean;         // No varied tx types, no delays >5min
+  hasHighOutToInRatio: boolean;             // OUT txs >> IN txs (sweeping everything)
+  
+  // Behavioral metrics
+  behavioralMetrics?: {
+    avgResponseTimeSeconds: number;
+    minResponseTimeSeconds: number;
+    maxResponseTimeSeconds: number;
+    sweepEventCount: number;
+    topDestinationConcentration: number; // % of OUT to top destination
+    top3DestinationConcentration: number; // % of OUT to top 3 destinations
+    outToInRatio: number;
+    currentBalanceWei: string;
+    totalSweptWei: string;
+    sweepEvidenceTxHashes: string[];
+  };
+  
   signalCount: number;
+  behavioralSignalCount: number;  // Count of BEHAVIORAL signals specifically
   details: string[];
+}
+
+// ============================================
+// BEHAVIORAL SWEEPER ANALYSIS
+// ============================================
+// Analyzes transaction patterns to detect automated balance draining
+// WITHOUT relying on known malicious address lists.
+
+export interface BehavioralSweeperAnalysis {
+  isLikelySweeper: boolean;
+  confidence: number;  // 0-100
+  indicators: BehavioralIndicator[];
+  sweepEvents: SweepEvent[];
+  recommendation: 'SAFE' | 'LIKELY_COMPROMISED' | 'COMPROMISED';
+  evidenceSummary: string;
+}
+
+export interface BehavioralIndicator {
+  type: 'IMMEDIATE_OUTBOUND' | 'REPEATED_PATTERN' | 'CONCENTRATED_DESTINATIONS' | 
+        'AUTOMATED_TIMING' | 'NEAR_EMPTY_WALLET' | 'ZERO_HUMAN_INTERACTION' | 
+        'HIGH_OUT_TO_IN_RATIO';
+  detected: boolean;
+  weight: number;  // How much this contributes to confidence
+  evidence: string;
+  txHashes?: string[];
+}
+
+export interface SweepEvent {
+  inboundTxHash: string;
+  outboundTxHash: string;
+  inboundTimestamp: number;
+  outboundTimestamp: number;
+  responseTimeSeconds: number;
+  destinationAddress: string;
+  amountWei: string;
+}
+
+// ============================================
+// BEHAVIORAL SWEEPER DETECTOR
+// ============================================
+
+export function analyzeBehavioralSweeperPattern(
+  transactions: { 
+    hash: string; 
+    from: string; 
+    to: string; 
+    value: string; 
+    timestamp: number;
+    input?: string;
+  }[],
+  walletAddress: string,
+  currentBalanceWei: string
+): BehavioralSweeperAnalysis {
+  const normalized = walletAddress.toLowerCase();
+  const indicators: BehavioralIndicator[] = [];
+  const sweepEvents: SweepEvent[] = [];
+  
+  // Build timeline
+  const inboundTxs = transactions.filter(tx => tx.to?.toLowerCase() === normalized);
+  const outboundTxs = transactions.filter(tx => tx.from?.toLowerCase() === normalized);
+  
+  if (inboundTxs.length < 2 || outboundTxs.length < 2) {
+    return {
+      isLikelySweeper: false,
+      confidence: 0,
+      indicators: [],
+      sweepEvents: [],
+      recommendation: 'SAFE',
+      evidenceSummary: 'Insufficient transaction history for behavioral analysis.',
+    };
+  }
+  
+  // Sort by timestamp
+  const sortedInbound = [...inboundTxs].sort((a, b) => a.timestamp - b.timestamp);
+  const sortedOutbound = [...outboundTxs].sort((a, b) => a.timestamp - b.timestamp);
+  
+  // ============================================
+  // INDICATOR 1: IMMEDIATE OUTBOUND PATTERN
+  // ============================================
+  // Look for OUT transactions that follow IN transactions within 60 seconds
+  let immediateOutboundCount = 0;
+  const responseTimes: number[] = [];
+  
+  for (const inTx of sortedInbound) {
+    // Find the next outbound after this inbound
+    const nextOut = sortedOutbound.find(out => 
+      out.timestamp > inTx.timestamp && 
+      out.timestamp - inTx.timestamp <= 300 // Within 5 minutes
+    );
+    
+    if (nextOut) {
+      const responseTime = nextOut.timestamp - inTx.timestamp;
+      responseTimes.push(responseTime);
+      
+      if (responseTime <= 60) {
+        immediateOutboundCount++;
+        sweepEvents.push({
+          inboundTxHash: inTx.hash,
+          outboundTxHash: nextOut.hash,
+          inboundTimestamp: inTx.timestamp,
+          outboundTimestamp: nextOut.timestamp,
+          responseTimeSeconds: responseTime,
+          destinationAddress: nextOut.to?.toLowerCase() || '',
+          amountWei: nextOut.value || '0',
+        });
+      }
+    }
+  }
+  
+  const immediateOutboundRatio = inboundTxs.length > 0 
+    ? immediateOutboundCount / inboundTxs.length 
+    : 0;
+  
+  indicators.push({
+    type: 'IMMEDIATE_OUTBOUND',
+    detected: immediateOutboundRatio >= 0.5,
+    weight: 25,
+    evidence: `${immediateOutboundCount}/${inboundTxs.length} inbound txs (${(immediateOutboundRatio * 100).toFixed(0)}%) followed by outbound within 60s`,
+    txHashes: sweepEvents.slice(0, 5).map(e => e.outboundTxHash),
+  });
+  
+  // ============================================
+  // INDICATOR 2: AUTOMATED TIMING PATTERN
+  // ============================================
+  // Consistent sub-60s response times indicate automation
+  const avgResponseTime = responseTimes.length > 0 
+    ? responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length 
+    : Infinity;
+  const minResponseTime = responseTimes.length > 0 ? Math.min(...responseTimes) : Infinity;
+  const maxResponseTime = responseTimes.length > 0 ? Math.max(...responseTimes) : Infinity;
+  
+  // Automation: avg < 60s, max < 120s (consistent fast response)
+  const hasAutomatedTiming = avgResponseTime < 60 && maxResponseTime < 120 && responseTimes.length >= 3;
+  
+  indicators.push({
+    type: 'AUTOMATED_TIMING',
+    detected: hasAutomatedTiming,
+    weight: 20,
+    evidence: `Response times: avg=${avgResponseTime.toFixed(0)}s, min=${minResponseTime}s, max=${maxResponseTime}s (${responseTimes.length} events)`,
+  });
+  
+  // ============================================
+  // INDICATOR 3: CONCENTRATED DESTINATIONS
+  // ============================================
+  // Most OUT goes to a small set of addresses
+  const destCounts = new Map<string, number>();
+  let totalOutCount = 0;
+  for (const tx of outboundTxs) {
+    const dest = tx.to?.toLowerCase() || '';
+    destCounts.set(dest, (destCounts.get(dest) || 0) + 1);
+    totalOutCount++;
+  }
+  
+  const sortedDests = [...destCounts.entries()].sort((a, b) => b[1] - a[1]);
+  const topDestConcentration = totalOutCount > 0 && sortedDests.length > 0
+    ? sortedDests[0][1] / totalOutCount
+    : 0;
+  const top3Concentration = totalOutCount > 0
+    ? sortedDests.slice(0, 3).reduce((sum, [_, count]) => sum + count, 0) / totalOutCount
+    : 0;
+  
+  // Concentrated: top 3 destinations receive ≥70% of OUT txs
+  const hasConcentratedDests = top3Concentration >= 0.7 && destCounts.size <= 5;
+  
+  indicators.push({
+    type: 'CONCENTRATED_DESTINATIONS',
+    detected: hasConcentratedDests,
+    weight: 20,
+    evidence: `Top destination receives ${(topDestConcentration * 100).toFixed(0)}% of OUT, top 3 receive ${(top3Concentration * 100).toFixed(0)}% (${destCounts.size} unique destinations)`,
+  });
+  
+  // ============================================
+  // INDICATOR 4: HIGH OUT-TO-IN RATIO
+  // ============================================
+  // Sweepers have more OUT than IN (draining everything)
+  const outToInRatio = inboundTxs.length > 0 
+    ? outboundTxs.length / inboundTxs.length 
+    : 0;
+  
+  // Suspicious: OUT ≥ 1.5x IN
+  const hasHighOutToIn = outToInRatio >= 1.5 && outboundTxs.length >= 5;
+  
+  indicators.push({
+    type: 'HIGH_OUT_TO_IN_RATIO',
+    detected: hasHighOutToIn,
+    weight: 15,
+    evidence: `OUT:IN ratio = ${outToInRatio.toFixed(2)} (${outboundTxs.length} OUT, ${inboundTxs.length} IN)`,
+  });
+  
+  // ============================================
+  // INDICATOR 5: NEAR-EMPTY WALLET STATE
+  // ============================================
+  // Balance is very low relative to total swept
+  const totalSwept = outboundTxs.reduce((sum, tx) => sum + BigInt(tx.value || '0'), BigInt(0));
+  const balanceWei = BigInt(currentBalanceWei || '0');
+  const totalSweptPlusBalance = totalSwept + balanceWei;
+  
+  // Near-empty: current balance < 1% of total swept
+  const balanceRatio = totalSweptPlusBalance > BigInt(0) 
+    ? Number((balanceWei * BigInt(10000)) / totalSweptPlusBalance) / 100
+    : 100;
+  const hasNearEmptyWallet = balanceRatio < 5 && totalSwept > BigInt('100000000000000'); // > 0.0001 ETH swept
+  
+  indicators.push({
+    type: 'NEAR_EMPTY_WALLET',
+    detected: hasNearEmptyWallet,
+    weight: 15,
+    evidence: `Current balance is ${balanceRatio.toFixed(2)}% of total transacted value`,
+  });
+  
+  // ============================================
+  // INDICATOR 6: ZERO HUMAN INTERACTION
+  // ============================================
+  // No varied transaction types, no significant delays
+  // Humans: interact with DeFi, NFT, varied contracts
+  // Sweepers: only simple transfers, no contract calls
+  
+  const hasContractInteractions = transactions.some(tx => 
+    tx.input && tx.input.length > 10 && tx.input !== '0x'
+  );
+  
+  // Check for ANY delay > 5 minutes between consecutive txs
+  const allTxsSorted = [...transactions].sort((a, b) => a.timestamp - b.timestamp);
+  let hasHumanDelay = false;
+  for (let i = 1; i < allTxsSorted.length; i++) {
+    if (allTxsSorted[i].timestamp - allTxsSorted[i - 1].timestamp > 300) {
+      hasHumanDelay = true;
+      break;
+    }
+  }
+  
+  const hasZeroHumanInteraction = !hasContractInteractions && !hasHumanDelay && transactions.length >= 5;
+  
+  indicators.push({
+    type: 'ZERO_HUMAN_INTERACTION',
+    detected: hasZeroHumanInteraction,
+    weight: 15,
+    evidence: `Contract interactions: ${hasContractInteractions ? 'Yes' : 'No'}, Human delays (>5min): ${hasHumanDelay ? 'Yes' : 'No'}`,
+  });
+  
+  // ============================================
+  // INDICATOR 7: REPEATED SWEEP PATTERN
+  // ============================================
+  // Same pattern (IN → immediate OUT to same dest) repeats ≥3 times
+  const patternCounts = new Map<string, number>(); // dest -> count of sweep events
+  for (const event of sweepEvents) {
+    const key = event.destinationAddress;
+    patternCounts.set(key, (patternCounts.get(key) || 0) + 1);
+  }
+  
+  const maxPatternCount = patternCounts.size > 0 
+    ? Math.max(...patternCounts.values()) 
+    : 0;
+  const hasRepeatedPattern = maxPatternCount >= 3;
+  
+  indicators.push({
+    type: 'REPEATED_PATTERN',
+    detected: hasRepeatedPattern,
+    weight: 20,
+    evidence: `Sweep pattern repeated ${maxPatternCount} times to same destination`,
+  });
+  
+  // ============================================
+  // CALCULATE FINAL SCORE
+  // ============================================
+  let confidence = 0;
+  let detectedCount = 0;
+  
+  for (const indicator of indicators) {
+    if (indicator.detected) {
+      confidence += indicator.weight;
+      detectedCount++;
+    }
+  }
+  
+  // Cap at 100
+  confidence = Math.min(100, confidence);
+  
+  // Determine recommendation
+  let recommendation: 'SAFE' | 'LIKELY_COMPROMISED' | 'COMPROMISED';
+  let isLikelySweeper = false;
+  
+  if (detectedCount >= 4 || confidence >= 70) {
+    recommendation = 'COMPROMISED';
+    isLikelySweeper = true;
+  } else if (detectedCount >= 2 || confidence >= 40) {
+    recommendation = 'LIKELY_COMPROMISED';
+    isLikelySweeper = true;
+  } else {
+    recommendation = 'SAFE';
+  }
+  
+  // Build evidence summary
+  const detectedIndicators = indicators.filter(i => i.detected);
+  const evidenceSummary = detectedIndicators.length > 0
+    ? `Behavioral analysis detected ${detectedIndicators.length} sweeper indicators: ${detectedIndicators.map(i => i.type).join(', ')}`
+    : 'No sweeper behavior patterns detected.';
+  
+  return {
+    isLikelySweeper,
+    confidence,
+    indicators,
+    sweepEvents,
+    recommendation,
+    evidenceSummary,
+  };
 }
 
 // ============================================
@@ -444,9 +777,12 @@ export function analyzeSweeperSignals(
     destinationAddresses: string[];
     hasKnownAttackerLink: boolean;
     calledMaliciousContracts: boolean;
+    // NEW: Behavioral context (optional for backward compatibility)
+    behavioralAnalysis?: BehavioralSweeperAnalysis;
   }
 ): SweeperSignals {
   const signals: SweeperSignals = {
+    // Label-based signals
     hasKnownDrainerInteraction: context.hasDrainerInteraction,
     hasUnauthorizedApprovals: context.hasUnauthorizedApprovals,
     hasPermitAbuse: context.hasPermitSignatures,
@@ -455,7 +791,18 @@ export function analyzeSweeperSignals(
     hasMaliciousContractCall: context.calledMaliciousContracts,
     forwardsToMultipleUnknownAddresses: false,
     destinationIsKnownDrainer: false,
+    
+    // Behavioral signals (initialized to false)
+    hasImmediateOutboundPattern: false,
+    hasRepeatedSweepPattern: false,
+    hasConcentratedDestinations: false,
+    hasAutomatedTimingPattern: false,
+    hasNearEmptyWalletState: false,
+    hasZeroHumanInteraction: false,
+    hasHighOutToInRatio: false,
+    
     signalCount: 0,
+    behavioralSignalCount: 0,
     details: [],
   };
   
@@ -475,7 +822,91 @@ export function analyzeSweeperSignals(
     signals.details.push(`Forwards to ${unknownDestinations} unknown addresses`);
   }
   
-  // Count signals
+  // ============================================
+  // BEHAVIORAL SIGNALS (PRIMARY - most important!)
+  // ============================================
+  // These detect sweeper bots even when not in known address lists
+  
+  if (context.behavioralAnalysis) {
+    const ba = context.behavioralAnalysis;
+    
+    for (const indicator of ba.indicators) {
+      switch (indicator.type) {
+        case 'IMMEDIATE_OUTBOUND':
+          signals.hasImmediateOutboundPattern = indicator.detected;
+          if (indicator.detected) {
+            signals.behavioralSignalCount++;
+            signals.details.push(`BEHAVIORAL: ${indicator.evidence}`);
+          }
+          break;
+        case 'REPEATED_PATTERN':
+          signals.hasRepeatedSweepPattern = indicator.detected;
+          if (indicator.detected) {
+            signals.behavioralSignalCount++;
+            signals.details.push(`BEHAVIORAL: ${indicator.evidence}`);
+          }
+          break;
+        case 'CONCENTRATED_DESTINATIONS':
+          signals.hasConcentratedDestinations = indicator.detected;
+          if (indicator.detected) {
+            signals.behavioralSignalCount++;
+            signals.details.push(`BEHAVIORAL: ${indicator.evidence}`);
+          }
+          break;
+        case 'AUTOMATED_TIMING':
+          signals.hasAutomatedTimingPattern = indicator.detected;
+          if (indicator.detected) {
+            signals.behavioralSignalCount++;
+            signals.details.push(`BEHAVIORAL: ${indicator.evidence}`);
+          }
+          break;
+        case 'NEAR_EMPTY_WALLET':
+          signals.hasNearEmptyWalletState = indicator.detected;
+          if (indicator.detected) {
+            signals.behavioralSignalCount++;
+            signals.details.push(`BEHAVIORAL: ${indicator.evidence}`);
+          }
+          break;
+        case 'ZERO_HUMAN_INTERACTION':
+          signals.hasZeroHumanInteraction = indicator.detected;
+          if (indicator.detected) {
+            signals.behavioralSignalCount++;
+            signals.details.push(`BEHAVIORAL: ${indicator.evidence}`);
+          }
+          break;
+        case 'HIGH_OUT_TO_IN_RATIO':
+          signals.hasHighOutToInRatio = indicator.detected;
+          if (indicator.detected) {
+            signals.behavioralSignalCount++;
+            signals.details.push(`BEHAVIORAL: ${indicator.evidence}`);
+          }
+          break;
+      }
+    }
+    
+    // Store metrics if available
+    if (ba.sweepEvents.length > 0) {
+      const responseTimes = ba.sweepEvents.map(e => e.responseTimeSeconds);
+      signals.behavioralMetrics = {
+        avgResponseTimeSeconds: responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length,
+        minResponseTimeSeconds: Math.min(...responseTimes),
+        maxResponseTimeSeconds: Math.max(...responseTimes),
+        sweepEventCount: ba.sweepEvents.length,
+        topDestinationConcentration: ba.indicators.find(i => i.type === 'CONCENTRATED_DESTINATIONS')?.evidence.match(/(\d+)%/)?.[1] ? parseInt(ba.indicators.find(i => i.type === 'CONCENTRATED_DESTINATIONS')?.evidence.match(/(\d+)%/)?.[1] || '0') / 100 : 0,
+        top3DestinationConcentration: 0, // Would need to calculate
+        outToInRatio: ba.indicators.find(i => i.type === 'HIGH_OUT_TO_IN_RATIO')?.evidence.match(/ratio = ([\d.]+)/)?.[1] ? parseFloat(ba.indicators.find(i => i.type === 'HIGH_OUT_TO_IN_RATIO')?.evidence.match(/ratio = ([\d.]+)/)?.[1] || '0') : 0,
+        currentBalanceWei: '0',
+        totalSweptWei: ba.sweepEvents.reduce((sum, e) => (BigInt(sum) + BigInt(e.amountWei)).toString(), '0'),
+        sweepEvidenceTxHashes: ba.sweepEvents.slice(0, 10).map(e => e.outboundTxHash),
+      };
+    }
+  }
+  
+  // ============================================
+  // COUNT ALL SIGNALS
+  // ============================================
+  
+  // Label-based signals
   if (signals.hasKnownDrainerInteraction) {
     signals.signalCount++;
     signals.details.push('Interacted with known drainer contract');
@@ -502,11 +933,14 @@ export function analyzeSweeperSignals(
   }
   if (signals.forwardsToMultipleUnknownAddresses) {
     signals.signalCount++;
-    // Don't count this alone - needs corroboration
   }
   if (signals.destinationIsKnownDrainer) {
     signals.signalCount++;
   }
+  
+  // CRITICAL: Add behavioral signals to total count
+  // Behavioral signals can independently trigger sweeper detection!
+  signals.signalCount += signals.behavioralSignalCount;
   
   return signals;
 }

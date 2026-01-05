@@ -67,9 +67,11 @@ import {
   classifyAddress,
   analyzeSweeperSignals,
   determineSweeperVerdict,
+  analyzeBehavioralSweeperPattern,
   type AddressClassification,
   type SweeperSignals,
   type SweeperVerdict,
+  type BehavioralSweeperAnalysis,
 } from '../detection/address-classifier';
 import {
   checkInfrastructureProtection,
@@ -238,35 +240,35 @@ export class EVMAnalyzer {
     // ============================================
     // COMPREHENSIVE THREAT DETECTION
     // ============================================
-    
+
     // If infrastructure is protected, skip heuristic detection
     // (only check if it interacted with OTHER malicious addresses)
     if (!infrastructureCheck.isProtected) {
-      // 0. EXTERNAL THREAT INTELLIGENCE CHECK (GoPlus, bytecode analysis)
-      // This catches zero-day drainers and proxy clones not in our static database
-      const externalThreats = await this.checkExternalThreatIntelligence(transactions, tokenTransfers, normalizedAddress);
-      threats.push(...externalThreats);
+    // 0. EXTERNAL THREAT INTELLIGENCE CHECK (GoPlus, bytecode analysis)
+    // This catches zero-day drainers and proxy clones not in our static database
+    const externalThreats = await this.checkExternalThreatIntelligence(transactions, tokenTransfers, normalizedAddress);
+    threats.push(...externalThreats);
     } else {
       console.log(`[ANALYZE] ${normalizedAddress}: Skipping heuristic detection for protected infrastructure`);
     }
 
     // Skip heuristic threat detection for protected infrastructure
     if (!infrastructureCheck.isProtected) {
-      // 1. DETECT COMPLETE WALLET DRAIN (Private Key Compromise or Drainer)
-      const drainThreat = this.detectWalletDrain(transactions, tokenTransfers, currentBalance, normalizedAddress);
-      if (drainThreat) threats.push(drainThreat);
+    // 1. DETECT COMPLETE WALLET DRAIN (Private Key Compromise or Drainer)
+    const drainThreat = this.detectWalletDrain(transactions, tokenTransfers, currentBalance, normalizedAddress);
+    if (drainThreat) threats.push(drainThreat);
 
-      // 2. DETECT KNOWN MALICIOUS INTERACTIONS
+    // 2. DETECT KNOWN MALICIOUS INTERACTIONS
       const maliciousThreats = await this.detectMaliciousInteractions(transactions, tokenTransfers, normalizedAddress, approvalEvents);
-      threats.push(...maliciousThreats);
+    threats.push(...maliciousThreats);
 
-      // 3. DETECT SUSPICIOUS APPROVAL PATTERNS
-      const approvalThreats = this.detectApprovalAbuse(approvalEvents, tokenTransfers, normalizedAddress);
-      threats.push(...approvalThreats);
+    // 3. DETECT SUSPICIOUS APPROVAL PATTERNS
+    const approvalThreats = this.detectApprovalAbuse(approvalEvents, tokenTransfers, normalizedAddress);
+    threats.push(...approvalThreats);
 
-      // 4. DETECT SWEEPER BOT (Private Key Compromise with Active Monitoring)
-      const sweeperThreat = this.detectSweeperBot(transactions, tokenTransfers, currentBalance, normalizedAddress);
-      if (sweeperThreat) threats.push(sweeperThreat);
+    // 4. DETECT SWEEPER BOT (Private Key Compromise with Active Monitoring)
+    const sweeperThreat = this.detectSweeperBot(transactions, tokenTransfers, currentBalance, normalizedAddress);
+    if (sweeperThreat) threats.push(sweeperThreat);
     }
 
     // ============================================
@@ -796,8 +798,75 @@ export class EVMAnalyzer {
     const avgTimeToForward = forwardCount > 0 ? totalTimeDelta / forwardCount : 0;
 
     // ============================================
-    // STEP 1: CLASSIFY THE PRIMARY DESTINATION ADDRESS
+    // STEP 1: BEHAVIORAL SWEEPER ANALYSIS (PRIMARY - RUN FIRST!)
     // ============================================
+    // This MUST run BEFORE any early exits based on destination classification.
+    // A sweeper bot sending to "exchange infrastructure" is STILL a sweeper bot!
+    const behavioralAnalysis = analyzeBehavioralSweeperPattern(
+      transactions.map(tx => ({
+        hash: tx.hash,
+        from: tx.from,
+        to: tx.to || '',
+        value: tx.value,
+        timestamp: tx.timestamp,
+        input: tx.input,
+      })),
+      userAddress,
+      currentBalance
+    );
+    
+    console.log(`[detectSweeperBot] ${userAddress}: Behavioral analysis - isLikelySweeper: ${behavioralAnalysis.isLikelySweeper}, confidence: ${behavioralAnalysis.confidence}%, recommendation: ${behavioralAnalysis.recommendation}`);
+    
+    // ============================================
+    // STEP 1.5: IF BEHAVIORAL EVIDENCE EXISTS, FLAG IMMEDIATELY
+    // ============================================
+    // Do NOT allow early exits to bypass behavioral sweeper patterns
+    // CRITICAL: Even 40% confidence behavioral evidence is significant - 
+    // known address lists should NOT override behavioral detection!
+    if (behavioralAnalysis.isLikelySweeper && behavioralAnalysis.confidence >= 40) {
+      const detectedIndicators = behavioralAnalysis.indicators.filter(i => i.detected);
+      console.log(`[detectSweeperBot] ${userAddress}: BEHAVIORAL SWEEPER DETECTED (${behavioralAnalysis.confidence}%) - ${detectedIndicators.length} indicators - OVERRIDING destination checks`);
+      
+      // Build evidence
+      const evidenceTxHashes = behavioralAnalysis.sweepEvents.slice(0, 5).map(e => e.outboundTxHash);
+      const topDest = behavioralAnalysis.sweepEvents.length > 0 
+        ? behavioralAnalysis.sweepEvents[0].destinationAddress 
+        : primaryRecipient || 'unknown';
+      
+      // CRITICAL: Per requirements, ≥2 behavioral indicators = COMPROMISED
+      // Use CRITICAL severity to ensure COMPROMISED status
+      const detectedCount = detectedIndicators.length;
+      const severity = detectedCount >= 2 ? 'CRITICAL' : 
+                       behavioralAnalysis.confidence >= 50 ? 'HIGH' : 'MEDIUM';
+      
+      return {
+        id: `behavioral-sweeper-${Date.now()}`,
+        type: 'PRIVATE_KEY_LEAK' as AttackType,
+        severity,
+        title: '🚨 AUTOMATED BALANCE DRAINING DETECTED (Sweeper Bot)',
+        description: `This wallet shows automated fund draining behavior. ${behavioralAnalysis.evidenceSummary} Any funds sent to this wallet are being automatically swept. The private key is likely compromised.`,
+        technicalDetails: `Behavioral Analysis:\n${detectedIndicators.map(i => `• ${i.type}: ${i.evidence}`).join('\n')}\n\nConfidence: ${behavioralAnalysis.confidence}%\nSweep Events: ${behavioralAnalysis.sweepEvents.length}\nRecommendation: ${behavioralAnalysis.recommendation}`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: [topDest],
+        relatedTransactions: evidenceTxHashes,
+        ongoingRisk: true,
+        attackerInfo: {
+          address: topDest,
+          type: 'SWEEPER_BOT',
+          confidence: behavioralAnalysis.confidence,
+          evidenceCount: detectedIndicators.length,
+          firstSeenAt: new Date().toISOString(),
+        },
+        category: 'ACTIVE_RISK',
+        isHistorical: false,
+        excludeFromRiskScore: false,
+      };
+    }
+
+    // ============================================
+    // STEP 2: CLASSIFY THE PRIMARY DESTINATION ADDRESS
+    // ============================================
+    // Only apply these checks if behavioral analysis didn't find strong evidence
     const primaryDestClassification = primaryRecipient 
       ? classifyAddress(primaryRecipient, this.chain, {
           incomingCount: incomingTxs.length,
@@ -812,9 +881,10 @@ export class EVMAnalyzer {
       : null;
 
     // ============================================
-    // STEP 2: CHECK IF THIS IS EXCHANGE/INFRASTRUCTURE BEHAVIOR
+    // STEP 3: CHECK IF THIS IS EXCHANGE/INFRASTRUCTURE BEHAVIOR
     // ============================================
-    if (primaryDestClassification && 
+    // ONLY skip if behavioral analysis showed NO sweeper patterns
+    if (!behavioralAnalysis.isLikelySweeper && primaryDestClassification && 
         (primaryDestClassification.role === 'EXCHANGE_INFRASTRUCTURE' ||
          primaryDestClassification.role === 'PROTOCOL_ROUTER' ||
          primaryDestClassification.role === 'DEFI_PROTOCOL' ||
@@ -824,20 +894,22 @@ export class EVMAnalyzer {
     }
 
     // ============================================
-    // STEP 3: LEGITIMATE DESTINATION RATIO CHECK
+    // STEP 4: LEGITIMATE DESTINATION RATIO CHECK
     // ============================================
     const legitimateOutgoingCount = outgoingTxs.filter(t => isLegitimateDestination(t.to, t.methodId)).length;
     const legitimateRatio = outgoingTxs.length > 0 ? legitimateOutgoingCount / outgoingTxs.length : 1;
     
-    if (legitimateRatio > 0.7) {
+    // Only apply this check if behavioral analysis showed NO sweeper patterns
+    if (!behavioralAnalysis.isLikelySweeper && legitimateRatio > 0.7) {
       console.log(`[detectSweeperBot] ${userAddress}: ${(legitimateRatio * 100).toFixed(0)}% outgoing to legitimate destinations - NOT a sweeper victim`);
       return null;
     }
 
     // ============================================
-    // STEP 4: AUTO-FORWARDING DETECTION (non-malicious)
+    // STEP 5: AUTO-FORWARDING DETECTION (non-malicious)
     // ============================================
-    if (forwardsToSameAddress && uniqueRecipients <= 3) {
+    // Only apply this check if behavioral analysis showed NO sweeper patterns
+    if (!behavioralAnalysis.isLikelySweeper && forwardsToSameAddress && uniqueRecipients <= 3) {
       // Classify the wallet's behavior pattern
       const walletClassification = classifyAddress(userAddress, this.chain, {
         incomingCount: incomingTxs.length,
@@ -858,7 +930,7 @@ export class EVMAnalyzer {
     }
 
     // ============================================
-    // STEP 5: GATHER MALICIOUS SIGNALS
+    // STEP 6: GATHER MALICIOUS SIGNALS
     // ============================================
     const hasMaliciousApprovals = transactions.some(tx => {
       if (!tx.input || tx.input.length < 10) return false;
@@ -882,7 +954,10 @@ export class EVMAnalyzer {
       return methodId === '0xd505accf' || methodId === '0x8fcbaf0c'; // permit() signatures
     });
 
-    // Analyze sweeper signals using the new system
+    // ============================================
+    // STEP 6.5: ANALYZE SWEEPER SIGNALS (COMBINED)
+    // ============================================
+    // Analyze sweeper signals using the new system (includes behavioral + label-based)
     const sweeperSignals = analyzeSweeperSignals(userAddress, this.chain, {
       hasDrainerInteraction,
       hasUnauthorizedApprovals: hasMaliciousApprovals,
@@ -891,16 +966,23 @@ export class EVMAnalyzer {
       destinationAddresses,
       hasKnownAttackerLink: hasDrainerInteraction,
       calledMaliciousContracts: hasDrainerInteraction,
+      behavioralAnalysis, // Pass behavioral analysis results
     });
 
     // ============================================
     // STEP 6: APPLY MULTIPLE SIGNAL REQUIREMENT
     // ============================================
-    // RULE: Fewer than 2 independent signals = DO NOT mark as sweeper
-    if (sweeperSignals.signalCount < 2) {
-      console.log(`[detectSweeperBot] ${userAddress}: Only ${sweeperSignals.signalCount} sweeper signal(s) - insufficient for classification`);
+    // RULE: If ≥2 BEHAVIORAL signals OR ≥2 label-based signals = potential sweeper
+    // CRITICAL: Behavioral signals can INDEPENDENTLY trigger detection!
+    const hasSufficientBehavioralEvidence = sweeperSignals.behavioralSignalCount >= 2;
+    const hasSufficientLabelEvidence = sweeperSignals.signalCount - sweeperSignals.behavioralSignalCount >= 2;
+    
+    if (!hasSufficientBehavioralEvidence && !hasSufficientLabelEvidence && sweeperSignals.signalCount < 2) {
+      console.log(`[detectSweeperBot] ${userAddress}: Only ${sweeperSignals.signalCount} signal(s) (${sweeperSignals.behavioralSignalCount} behavioral) - insufficient for classification`);
       return null;
     }
+    
+    console.log(`[detectSweeperBot] ${userAddress}: ${sweeperSignals.signalCount} signals detected (${sweeperSignals.behavioralSignalCount} behavioral) - proceeding with analysis`);
 
     // ============================================
     // STEP 7: DETECT SWEEP PATTERNS
@@ -2039,23 +2121,23 @@ export class EVMAnalyzer {
           // ============================================
           // ACTIVE THREAT: Approval still exists
           // ============================================
-          threats.push({
-            id: `approval-abuse-${approval.transactionHash}`,
-            type: 'APPROVAL_HIJACK',
-            severity: 'CRITICAL',
+        threats.push({
+          id: `approval-abuse-${approval.transactionHash}`,
+          type: 'APPROVAL_HIJACK',
+          severity: 'CRITICAL',
             title: `⚠️ ACTIVE: Approval to ${drainerName}`,
             description: `You have an ACTIVE approval allowing ${drainerName} to spend your ${approval.tokenSymbol || 'tokens'}. Revoke this approval immediately!`,
             technicalDetails: `Spender: ${approval.spender}\nToken: ${approval.token}\nStatus: ACTIVE - Can drain your tokens`,
-            detectedAt: new Date().toISOString(),
-            relatedAddresses: [approval.spender],
-            relatedTransactions: [approval.transactionHash],
-            ongoingRisk: true,
+          detectedAt: new Date().toISOString(),
+          relatedAddresses: [approval.spender],
+          relatedTransactions: [approval.transactionHash],
+          ongoingRisk: true,
             category: 'ACTIVE_RISK',
             isHistorical: false,
             approvalRevoked: false,
             currentAllowance: approval.amount,
             excludeFromRiskScore: false, // This DOES affect risk score
-          });
+        });
         }
       }
     }
@@ -2483,13 +2565,13 @@ export class EVMAnalyzer {
         
         // Don't add factor if weight is 0
         if (weight > 0) {
-          factors.push({
-            id: `threat-${threat.id}`,
-            type: factorType,
-            weight,
-            description: threat.title,
-            evidence: threat.relatedTransactions,
-          });
+        factors.push({
+          id: `threat-${threat.id}`,
+          type: factorType,
+          weight,
+          description: threat.title,
+          evidence: threat.relatedTransactions,
+        });
         }
       }
       // Approval issues
@@ -2500,13 +2582,13 @@ export class EVMAnalyzer {
         factorType = 'APPROVAL_TO_MALICIOUS';
         
         if (weight > 0) {
-          factors.push({
-            id: `threat-${threat.id}`,
-            type: factorType,
-            weight,
-            description: threat.title,
-            evidence: threat.relatedAddresses,
-          });
+        factors.push({
+          id: `threat-${threat.id}`,
+          type: factorType,
+          weight,
+          description: threat.title,
+          evidence: threat.relatedAddresses,
+        });
         }
       }
       // Other threats

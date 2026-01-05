@@ -585,6 +585,9 @@ export interface DetectedThreat {
     sweepCount?: number;
     avgResponseTime?: number;
     totalStolen?: string;
+    confidence?: number;       // Behavioral detection confidence (0-100)
+    evidenceCount?: number;    // Number of behavioral indicators detected
+    firstSeenAt?: string;      // When first detected
   };
   
   // ============================================
