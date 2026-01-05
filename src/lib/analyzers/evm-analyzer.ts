@@ -257,7 +257,7 @@ export class EVMAnalyzer {
       if (drainThreat) threats.push(drainThreat);
 
       // 2. DETECT KNOWN MALICIOUS INTERACTIONS
-      const maliciousThreats = await this.detectMaliciousInteractions(transactions, tokenTransfers, normalizedAddress);
+      const maliciousThreats = await this.detectMaliciousInteractions(transactions, tokenTransfers, normalizedAddress, approvalEvents);
       threats.push(...maliciousThreats);
 
       // 3. DETECT SUSPICIOUS APPROVAL PATTERNS
@@ -330,20 +330,49 @@ export class EVMAnalyzer {
     );
     
     // Add compromise evidence to threats if detected
+    // CRITICAL: Preserve historical vs active status from evidence!
     if (compromiseAnalysis.evidence.length > 0) {
       for (const ev of compromiseAnalysis.evidence) {
         if (ev.severity === 'CRITICAL' || ev.severity === 'HIGH') {
+          // Use the evidence's own classification flags
+          const isHistorical = ev.isHistorical === true || ev.isActiveThreat === false;
+          const isActive = ev.isActiveThreat === true && !ev.isHistorical;
+          
+          // Determine the threat category based on evidence flags
+          let category: 'ACTIVE_RISK' | 'HISTORICAL_EXPOSURE' | 'RESOLVED' = 'ACTIVE_RISK';
+          if (isHistorical) {
+            category = ev.wasRemediated ? 'RESOLVED' : 'HISTORICAL_EXPOSURE';
+          }
+          
+          // Create user-friendly display label for historical threats
+          let displayLabel: string | undefined;
+          if (isHistorical) {
+            if (ev.wasRemediated) {
+              displayLabel = `✓ Previously revoked – no active risk`;
+            } else {
+              displayLabel = `ℹ️ Historical: ${this.getCompromiseThreatTitle(ev.code)} (no current access)`;
+            }
+          }
+          
           threats.push({
-            id: `compromise-${ev.code}-${Date.now()}`,
+            id: `compromise-${ev.code}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             type: this.mapCompromiseCodeToAttackType(ev.code),
-            severity: ev.severity,
-            title: this.getCompromiseThreatTitle(ev.code),
-            description: ev.description,
-            technicalDetails: `Code: ${ev.code}\nConfidence: ${ev.confidence}%${ev.relatedAddress ? `\nRelated Address: ${ev.relatedAddress}` : ''}`,
+            severity: isHistorical ? 'LOW' : ev.severity, // Downgrade historical threats to LOW
+            title: displayLabel || this.getCompromiseThreatTitle(ev.code),
+            description: isHistorical 
+              ? `${ev.description}\n\n⚠️ This is a HISTORICAL event. No active malicious access exists.`
+              : ev.description,
+            technicalDetails: `Code: ${ev.code}\nConfidence: ${ev.confidence}%${ev.relatedAddress ? `\nRelated Address: ${ev.relatedAddress}` : ''}${isHistorical ? '\n\n✓ Historical event - excluded from risk score.' : ''}`,
             detectedAt: ev.timestamp || new Date().toISOString(),
             relatedAddresses: ev.relatedAddress ? [ev.relatedAddress] : [],
             relatedTransactions: ev.relatedTxHash ? [ev.relatedTxHash] : [],
-            ongoingRisk: ev.severity === 'CRITICAL',
+            ongoingRisk: isActive,
+            // Critical: Set the historical/resolved fields
+            category,
+            isHistorical,
+            approvalRevoked: ev.wasRemediated,
+            excludeFromRiskScore: isHistorical,
+            displayLabel,
           });
         }
       }
@@ -1030,7 +1059,8 @@ export class EVMAnalyzer {
   private async detectMaliciousInteractions(
     transactions: TransactionData[],
     tokenTransfers: TokenTransfer[],
-    userAddress: string
+    userAddress: string,
+    approvalEvents: ApprovalEvent[]
   ): Promise<DetectedThreat[]> {
     const threats: DetectedThreat[] = [];
     const flaggedAddresses = new Set<string>();
