@@ -86,6 +86,115 @@ describe('Regression: OpenSea contracts must NEVER be flagged', () => {
 });
 
 // ============================================
+// REGRESSION TEST: INFRASTRUCTURE PROTECTION
+// ============================================
+// OpenSea and other infrastructure can NEVER be classified as:
+// - Sweeper Bot
+// - Drainer
+// - Pink Drainer
+
+import {
+  checkInfrastructureProtection,
+  canNeverBeSweeperBot,
+  canNeverBeDrainer,
+  getAllProtectedAddresses,
+} from '../infrastructure-protection';
+
+describe('Infrastructure Protection: OpenSea can NEVER be sweeper/drainer', () => {
+  const OPENSEA_ADDRESSES = [
+    '0x00000000000000adc04c56bf30ac9d3c0aaf14dc', // Seaport 1.1
+    '0x00000000006c3852cbef3e08e8df289169ede581', // Seaport 1.4
+    '0x0000000000000068f116a894984e2db1123eb395', // Seaport 1.5
+    '0x00000000000001ad428e4906ae43d8f9852d0dd6', // Seaport 1.6
+    '0x1e0049783f008a0085193e00003d00cd54003c71', // Fee Collector
+  ];
+
+  test.each(OPENSEA_ADDRESSES)('OpenSea %s is protected infrastructure', (address) => {
+    const result = checkInfrastructureProtection(address, 'ethereum');
+    expect(result.isProtected).toBe(true);
+    expect(result.type).toBe('NFT_MARKETPLACE');
+    expect(result.canBeSweeperBot).toBe(false);
+    expect(result.canBeDrainer).toBe(false);
+    expect(result.canBePinkDrainer).toBe(false);
+  });
+
+  test.each(OPENSEA_ADDRESSES)('OpenSea %s can NEVER be sweeper bot', (address) => {
+    expect(canNeverBeSweeperBot(address)).toBe(true);
+  });
+
+  test.each(OPENSEA_ADDRESSES)('OpenSea %s can NEVER be drainer', (address) => {
+    expect(canNeverBeDrainer(address)).toBe(true);
+  });
+
+  test.each(OPENSEA_ADDRESSES)('OpenSea %s has expected behavior description', (address) => {
+    const result = checkInfrastructureProtection(address, 'ethereum');
+    expect(result.expectedBehavior).toBeDefined();
+    expect(result.expectedBehavior).toContain('NFT marketplace');
+  });
+
+  test.each(OPENSEA_ADDRESSES)('OpenSea %s has confidence note', (address) => {
+    const result = checkInfrastructureProtection(address, 'ethereum');
+    expect(result.confidenceNote).toBeDefined();
+    expect(result.confidenceNote?.toLowerCase()).toContain('verified');
+  });
+});
+
+describe('Infrastructure Protection: DEX routers can NEVER be sweeper/drainer', () => {
+  const DEX_ADDRESSES = [
+    '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2 Router
+    '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3 Router
+    '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45', // Universal Router
+    '0x1111111254eeb25477b68fb85ed929f73a960582', // 1inch V5
+  ];
+
+  test.each(DEX_ADDRESSES)('DEX %s is protected infrastructure', (address) => {
+    const result = checkInfrastructureProtection(address, 'ethereum');
+    expect(result.isProtected).toBe(true);
+    expect(result.canBeSweeperBot).toBe(false);
+    expect(result.canBeDrainer).toBe(false);
+  });
+
+  test.each(DEX_ADDRESSES)('DEX %s can NEVER be sweeper bot', (address) => {
+    expect(canNeverBeSweeperBot(address)).toBe(true);
+  });
+});
+
+describe('Infrastructure Protection: Known drainers are NOT protected', () => {
+  const KNOWN_DRAINERS = [
+    '0x00005ea00ac477b1030ce78506496e8c2de24bf5', // Pink Drainer
+    '0x0000db5c8b030ae20308ac975898e09741e70000', // Inferno Drainer
+  ];
+
+  test.each(KNOWN_DRAINERS)('Drainer %s is NOT protected infrastructure', (address) => {
+    const result = checkInfrastructureProtection(address, 'ethereum');
+    expect(result.isProtected).toBe(false);
+    expect(result.canBeSweeperBot).toBe('MAYBE');
+    expect(result.canBeDrainer).toBe('MAYBE');
+  });
+
+  test.each(KNOWN_DRAINERS)('Drainer %s is correctly flagged as malicious', (address) => {
+    expect(isMaliciousAddress(address, 'ethereum')).not.toBeNull();
+  });
+});
+
+describe('Infrastructure Protection: All protected addresses are in registry', () => {
+  test('Protected addresses list is populated', () => {
+    const addresses = getAllProtectedAddresses();
+    expect(addresses.length).toBeGreaterThan(20);
+  });
+
+  test('All protected addresses pass protection check', () => {
+    const addresses = getAllProtectedAddresses();
+    for (const address of addresses) {
+      const result = checkInfrastructureProtection(address, 'ethereum');
+      expect(result.isProtected).toBe(true);
+      expect(result.canBeSweeperBot).toBe(false);
+      expect(result.canBeDrainer).toBe(false);
+    }
+  });
+});
+
+// ============================================
 // REGRESSION TEST: NFT Mint Contracts → SAFE
 // ============================================
 

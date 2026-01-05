@@ -7,6 +7,8 @@
 
 import { AttackType, Chain, MaliciousContract, DrainerPattern } from '@/types';
 import { DRAINER_CONTRACTS, DRAINER_RECIPIENTS, isKnownDrainer, getDrainerType } from './drainer-addresses';
+import { checkInfrastructureProtection } from './infrastructure-protection';
+import { isSafeContract, isNFTMarketplace, isDeFiProtocol, isENSContract } from './safe-contracts';
 
 // ============================================
 // KNOWN MALICIOUS CONTRACTS - REAL DATA
@@ -411,7 +413,48 @@ export const CHAIN_RPC_CONFIG: Record<string, {
 export function isMaliciousAddress(address: string, chain: string): MaliciousContract | null {
   const normalizedAddress = address.toLowerCase();
   
-  // Check internal database first
+  // ============================================
+  // CRITICAL: CHECK INFRASTRUCTURE PROTECTION FIRST
+  // ============================================
+  // OpenSea, Uniswap, and other verified infrastructure can NEVER be malicious.
+  // This check MUST happen before any malicious database lookup.
+  // High transaction volume or token movement alone is NOT evidence of malice.
+  
+  const infrastructureCheck = checkInfrastructureProtection(normalizedAddress, chain as Chain);
+  if (infrastructureCheck.isProtected) {
+    console.log(`[isMaliciousAddress] ${normalizedAddress.slice(0, 10)}... is protected infrastructure (${infrastructureCheck.name}) - NEVER malicious`);
+    return null;
+  }
+  
+  // Also check safe contracts allowlist
+  if (isSafeContract(normalizedAddress)) {
+    console.log(`[isMaliciousAddress] ${normalizedAddress.slice(0, 10)}... is in safe contracts list - NEVER malicious`);
+    return null;
+  }
+  
+  // Check NFT marketplaces explicitly
+  if (isNFTMarketplace(normalizedAddress)) {
+    console.log(`[isMaliciousAddress] ${normalizedAddress.slice(0, 10)}... is NFT marketplace - NEVER malicious`);
+    return null;
+  }
+  
+  // Check DeFi protocols
+  if (isDeFiProtocol(normalizedAddress)) {
+    console.log(`[isMaliciousAddress] ${normalizedAddress.slice(0, 10)}... is DeFi protocol - NEVER malicious`);
+    return null;
+  }
+  
+  // Check ENS contracts
+  if (isENSContract(normalizedAddress)) {
+    console.log(`[isMaliciousAddress] ${normalizedAddress.slice(0, 10)}... is ENS contract - NEVER malicious`);
+    return null;
+  }
+  
+  // ============================================
+  // NOW CHECK MALICIOUS DATABASES
+  // ============================================
+  
+  // Check internal database
   const knownMalicious = KNOWN_MALICIOUS_CONTRACTS.find(
     (contract) => contract.address.toLowerCase() === normalizedAddress && contract.chain === chain
   );
@@ -448,6 +491,20 @@ export function isMaliciousAddress(address: string, chain: string): MaliciousCon
 
 export function isDrainerRecipient(address: string): boolean {
   const normalizedAddress = address.toLowerCase();
+  
+  // ============================================
+  // CRITICAL: Infrastructure contracts can NEVER be drainer recipients
+  // ============================================
+  const infrastructureCheck = checkInfrastructureProtection(normalizedAddress);
+  if (infrastructureCheck.isProtected) {
+    return false;
+  }
+  
+  // Safe contracts can never be drainer recipients
+  if (isSafeContract(normalizedAddress) || isNFTMarketplace(normalizedAddress) || 
+      isDeFiProtocol(normalizedAddress) || isENSContract(normalizedAddress)) {
+    return false;
+  }
   
   // Check internal list
   if (KNOWN_DRAINER_RECIPIENTS.some(

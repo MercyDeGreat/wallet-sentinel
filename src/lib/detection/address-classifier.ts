@@ -11,6 +11,7 @@ import { Chain } from '@/types';
 import { isSafeContract, isDeFiProtocol, isNFTMarketplace, isENSContract, isInfrastructureContract } from './safe-contracts';
 import { isMaliciousAddress, isDrainerRecipient, isLegitimateContract, isHighVolumeNeutralAddress } from './malicious-database';
 import { EXCHANGE_HOT_WALLETS } from './transaction-labeler';
+import { checkInfrastructureProtection, canNeverBeSweeperBot, canNeverBeDrainer } from './infrastructure-protection';
 
 // ============================================
 // ADDRESS ROLE TYPES
@@ -134,6 +135,41 @@ export function classifyAddress(
 ): AddressClassification {
   const normalized = address.toLowerCase();
   const evidence: string[] = [];
+  
+  // ============================================
+  // CHECK 0: INFRASTRUCTURE PROTECTION (HIGHEST PRIORITY)
+  // ============================================
+  // OpenSea, Uniswap, and other verified infrastructure can NEVER be
+  // classified as sweeper bots, drainers, or Pink Drainer.
+  const infraCheck = checkInfrastructureProtection(normalized, chain);
+  if (infraCheck.isProtected) {
+    const roleMap: Record<string, AddressRole> = {
+      'NFT_MARKETPLACE': 'PROTOCOL_ROUTER',
+      'DEX_ROUTER': 'PROTOCOL_ROUTER',
+      'BRIDGE': 'PROTOCOL_ROUTER',
+      'AGGREGATOR': 'PROTOCOL_ROUTER',
+      'LENDING_PROTOCOL': 'DEFI_PROTOCOL',
+      'EXCHANGE_INFRASTRUCTURE': 'EXCHANGE_INFRASTRUCTURE',
+      'SETTLEMENT_CONTRACT': 'PROTOCOL_ROUTER',
+      'ENS_INFRASTRUCTURE': 'INFRASTRUCTURE',
+      'RELAYER': 'PROTOCOL_ROUTER',
+      'ORACLE': 'INFRASTRUCTURE',
+      'MULTISIG': 'USER_CONTROLLED',
+      'VERIFIED_PROTOCOL': 'DEFI_PROTOCOL',
+    };
+    
+    return {
+      address: normalized,
+      role: roleMap[infraCheck.type!] || 'PROTOCOL_ROUTER',
+      confidence: 99,
+      isKnownEntity: true,
+      entityName: infraCheck.name,
+      riskLevel: 'NONE',
+      allowsRapidForwarding: true,
+      evidenceReasons: [infraCheck.reason, infraCheck.confidenceNote || ''].filter(Boolean),
+      shouldTriggerAlert: false,
+    };
+  }
   
   // ============================================
   // CHECK 1: Known Exchange Infrastructure

@@ -71,6 +71,12 @@ import {
   type SweeperSignals,
   type SweeperVerdict,
 } from '../detection/address-classifier';
+import {
+  checkInfrastructureProtection,
+  canNeverBeSweeperBot,
+  canNeverBeDrainer,
+  type InfrastructureCheckResult,
+} from '../detection/infrastructure-protection';
 
 // ============================================
 // INTERFACES
@@ -170,6 +176,55 @@ export class EVMAnalyzer {
     const normalizedAddress = address.toLowerCase();
     const threats: DetectedThreat[] = [];
 
+    // ============================================
+    // STEP 0: CHECK IF ADDRESS IS KNOWN MALICIOUS OR PROTECTED
+    // ============================================
+    // This must happen BEFORE any other analysis to:
+    // 1. Flag known drainers when directly scanned
+    // 2. Protect infrastructure from false positives
+    
+    // Check if this IS a known malicious address (drainer, sweeper, etc.)
+    const maliciousInfo = isMaliciousAddress(normalizedAddress, this.chain);
+    if (maliciousInfo) {
+      console.log(`[ANALYZE] ${normalizedAddress}: IS a known malicious address (${maliciousInfo.name})`);
+      threats.push({
+        id: `known-malicious-${Date.now()}`,
+        type: maliciousInfo.type || 'WALLET_DRAINER',
+        severity: 'CRITICAL',
+        title: `⚠️ KNOWN MALICIOUS ADDRESS: ${maliciousInfo.name}`,
+        description: `This address is a confirmed malicious contract/wallet. It has been used to steal funds from victims. DO NOT send any funds to this address or approve any transactions from it.`,
+        technicalDetails: `Name: ${maliciousInfo.name}\nType: ${maliciousInfo.type || 'DRAINER'}\nConfirmation: CONFIRMED\nReported: ${maliciousInfo.reportedAt || 'Unknown'}`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: [normalizedAddress],
+        relatedTransactions: [],
+        ongoingRisk: true,
+      });
+    }
+    
+    // Check if this IS a drainer recipient (wallet that receives stolen funds)
+    if (isDrainerRecipient(normalizedAddress)) {
+      console.log(`[ANALYZE] ${normalizedAddress}: IS a known drainer recipient`);
+      threats.push({
+        id: `drainer-recipient-${Date.now()}`,
+        type: 'WALLET_DRAINER',
+        severity: 'CRITICAL',
+        title: '⚠️ KNOWN DRAINER FUND RECIPIENT',
+        description: 'This address is known to receive stolen funds from drainer contracts. It is associated with theft operations.',
+        technicalDetails: `This address has been identified as receiving funds from confirmed drainer contracts.`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: [normalizedAddress],
+        relatedTransactions: [],
+        ongoingRisk: true,
+      });
+    }
+    
+    // Check if this is protected infrastructure
+    const infrastructureCheck = checkInfrastructureProtection(normalizedAddress, this.chain);
+    if (infrastructureCheck.isProtected) {
+      console.log(`[ANALYZE] ${normalizedAddress}: Protected infrastructure (${infrastructureCheck.name})`);
+      // Protected infrastructure = definitely SAFE, skip detailed analysis
+    }
+
     // Fetch all data in parallel
     const [transactions, tokenTransfers, approvalEvents, currentBalance] = await Promise.all([
       this.fetchTransactionHistory(normalizedAddress),
@@ -183,27 +238,36 @@ export class EVMAnalyzer {
     // ============================================
     // COMPREHENSIVE THREAT DETECTION
     // ============================================
+    
+    // If infrastructure is protected, skip heuristic detection
+    // (only check if it interacted with OTHER malicious addresses)
+    if (!infrastructureCheck.isProtected) {
+      // 0. EXTERNAL THREAT INTELLIGENCE CHECK (GoPlus, bytecode analysis)
+      // This catches zero-day drainers and proxy clones not in our static database
+      const externalThreats = await this.checkExternalThreatIntelligence(transactions, tokenTransfers, normalizedAddress);
+      threats.push(...externalThreats);
+    } else {
+      console.log(`[ANALYZE] ${normalizedAddress}: Skipping heuristic detection for protected infrastructure`);
+    }
 
-    // 0. EXTERNAL THREAT INTELLIGENCE CHECK (GoPlus, bytecode analysis)
-    // This catches zero-day drainers and proxy clones not in our static database
-    const externalThreats = await this.checkExternalThreatIntelligence(transactions, tokenTransfers, normalizedAddress);
-    threats.push(...externalThreats);
+    // Skip heuristic threat detection for protected infrastructure
+    if (!infrastructureCheck.isProtected) {
+      // 1. DETECT COMPLETE WALLET DRAIN (Private Key Compromise or Drainer)
+      const drainThreat = this.detectWalletDrain(transactions, tokenTransfers, currentBalance, normalizedAddress);
+      if (drainThreat) threats.push(drainThreat);
 
-    // 1. DETECT COMPLETE WALLET DRAIN (Private Key Compromise or Drainer)
-    const drainThreat = this.detectWalletDrain(transactions, tokenTransfers, currentBalance, normalizedAddress);
-    if (drainThreat) threats.push(drainThreat);
+      // 2. DETECT KNOWN MALICIOUS INTERACTIONS
+      const maliciousThreats = await this.detectMaliciousInteractions(transactions, tokenTransfers, normalizedAddress);
+      threats.push(...maliciousThreats);
 
-    // 2. DETECT KNOWN MALICIOUS INTERACTIONS
-    const maliciousThreats = await this.detectMaliciousInteractions(transactions, tokenTransfers, normalizedAddress);
-    threats.push(...maliciousThreats);
+      // 3. DETECT SUSPICIOUS APPROVAL PATTERNS
+      const approvalThreats = this.detectApprovalAbuse(approvalEvents, tokenTransfers, normalizedAddress);
+      threats.push(...approvalThreats);
 
-    // 3. DETECT SUSPICIOUS APPROVAL PATTERNS
-    const approvalThreats = this.detectApprovalAbuse(approvalEvents, tokenTransfers, normalizedAddress);
-    threats.push(...approvalThreats);
-
-    // 4. DETECT SWEEPER BOT (Private Key Compromise with Active Monitoring)
-    const sweeperThreat = this.detectSweeperBot(transactions, tokenTransfers, currentBalance, normalizedAddress);
-    if (sweeperThreat) threats.push(sweeperThreat);
+      // 4. DETECT SWEEPER BOT (Private Key Compromise with Active Monitoring)
+      const sweeperThreat = this.detectSweeperBot(transactions, tokenTransfers, currentBalance, normalizedAddress);
+      if (sweeperThreat) threats.push(sweeperThreat);
+    }
 
     // ============================================
     // ANALYZE CURRENT APPROVALS
@@ -343,6 +407,17 @@ export class EVMAnalyzer {
     userAddress: string
   ): DetectedThreat | null {
     // ============================================
+    // STEP 0: INFRASTRUCTURE PROTECTION CHECK
+    // ============================================
+    // If this address IS protected infrastructure (OpenSea, Uniswap, etc.),
+    // it can NEVER be classified as a drainer - short-circuit immediately.
+    const infrastructureCheck = checkInfrastructureProtection(userAddress, this.chain);
+    if (infrastructureCheck.isProtected) {
+      console.log(`[detectWalletDrain] ${userAddress}: Protected infrastructure (${infrastructureCheck.name}) - cannot be drainer`);
+      return null;
+    }
+
+    // ============================================
     // CRITICAL FALSE POSITIVE PREVENTION
     // ============================================
     // Sending assets to safe contracts/exchanges is NORMAL user activity:
@@ -366,6 +441,10 @@ export class EVMAnalyzer {
     // Helper: Check if address is a safe/legitimate destination
     const isSafeDestination = (address: string): boolean => {
       const normalized = address.toLowerCase();
+      // CRITICAL: Check infrastructure protection FIRST
+      // OpenSea, Uniswap, etc. can NEVER be flagged as drainer destinations
+      const infraCheck = checkInfrastructureProtection(normalized, this.chain);
+      if (infraCheck.isProtected) return true;
       // Check comprehensive safe contracts
       if (isSafeContract(normalized)) return true;
       // Check exchange hot wallets
@@ -558,6 +637,9 @@ export class EVMAnalyzer {
   //
   // RULE: Rapid forwarding alone is NOT evidence of a sweeper bot.
   // Multiple independent malicious signals are REQUIRED.
+  //
+  // CRITICAL: Infrastructure contracts (OpenSea, Uniswap, etc.) can NEVER
+  // be classified as sweeper bots, drainers, or Pink Drainer.
 
   private detectSweeperBot(
     transactions: TransactionData[],
@@ -565,6 +647,17 @@ export class EVMAnalyzer {
     currentBalance: string,
     userAddress: string
   ): DetectedThreat | null {
+    // ============================================
+    // STEP 0: INFRASTRUCTURE PROTECTION CHECK
+    // ============================================
+    // This MUST be checked FIRST. If the wallet is interacting with
+    // protected infrastructure, we apply special handling.
+    const infrastructureCheck = checkInfrastructureProtection(userAddress, this.chain);
+    if (infrastructureCheck.isProtected) {
+      console.log(`[detectSweeperBot] ${userAddress}: Protected infrastructure (${infrastructureCheck.name}) - cannot be sweeper bot`);
+      return null;
+    }
+
     if (transactions.length < 4) return null;
 
     // Parse current balance
@@ -580,6 +673,11 @@ export class EVMAnalyzer {
     // ============================================
     const isLegitimateDestination = (address: string, methodId?: string): boolean => {
       const normalized = address.toLowerCase();
+      
+      // CRITICAL: Check infrastructure protection FIRST
+      // OpenSea, Uniswap, etc. can NEVER be flagged as malicious destinations
+      const infraCheck = checkInfrastructureProtection(normalized, this.chain);
+      if (infraCheck.isProtected) return true;
       
       // Check safe contracts (comprehensive allowlist)
       if (isSafeContract(normalized)) return true;
@@ -937,6 +1035,17 @@ export class EVMAnalyzer {
     const threats: DetectedThreat[] = [];
     const flaggedAddresses = new Set<string>();
 
+    // ============================================
+    // STEP 0: INFRASTRUCTURE PROTECTION CHECK
+    // ============================================
+    // If this wallet IS protected infrastructure (OpenSea, Uniswap, etc.),
+    // it can NEVER be classified as malicious - return empty threats.
+    const infrastructureCheck = checkInfrastructureProtection(userAddress, this.chain);
+    if (infrastructureCheck.isProtected) {
+      console.log(`[detectMaliciousInteractions] ${userAddress}: Protected infrastructure (${infrastructureCheck.name}) - skipping malicious detection`);
+      return threats; // Empty - infrastructure cannot be malicious
+    }
+
     // Perform directional analysis to understand wallet's role
     const directionalAnalysis = this.analyzeTransactionDirection(transactions, tokenTransfers, userAddress);
 
@@ -956,8 +1065,12 @@ export class EVMAnalyzer {
       
       const destination = tx.to.toLowerCase();
       
-      // Skip if destination is legitimate infrastructure
-      // WHY: OpenSea, Uniswap etc. interact with millions of wallets including compromised ones
+      // Skip if destination is protected infrastructure
+      // CRITICAL: OpenSea, Uniswap etc. can NEVER be flagged as malicious destinations
+      const destInfraCheck = checkInfrastructureProtection(destination, this.chain);
+      if (destInfraCheck.isProtected) continue;
+      
+      // Skip if destination is legitimate infrastructure (secondary check)
       if (isLegitimateContract(destination)) continue;
       
       const malicious = isMaliciousAddress(destination, this.chain);
@@ -1738,7 +1851,25 @@ export class EVMAnalyzer {
     for (const approval of approvalEvents) {
       if (!approval?.spender) continue;
 
-      const spenderMalicious = isMaliciousAddress(approval.spender, this.chain) || isDrainerRecipient(approval.spender);
+      const spenderNormalized = approval.spender.toLowerCase();
+      
+      // ============================================
+      // INFRASTRUCTURE PROTECTION: Skip protected contracts
+      // ============================================
+      // OpenSea, Uniswap, etc. can NEVER be flagged as malicious spenders.
+      // Users approve these contracts millions of times - this is expected.
+      const infraCheck = checkInfrastructureProtection(spenderNormalized, this.chain);
+      if (infraCheck.isProtected) {
+        console.log(`[detectApprovalAbuse] Spender ${spenderNormalized.slice(0, 10)}... is protected infrastructure (${infraCheck.name}) - skipping`);
+        continue;
+      }
+      
+      // Secondary check: legitimate contracts
+      if (isLegitimateContract(spenderNormalized)) {
+        continue;
+      }
+
+      const spenderMalicious = isMaliciousAddress(spenderNormalized, this.chain) || isDrainerRecipient(spenderNormalized);
       
       if (spenderMalicious) {
         threats.push({
