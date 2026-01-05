@@ -1078,18 +1078,43 @@ export class EVMAnalyzer {
       if (malicious && !flaggedAddresses.has(destination)) {
         flaggedAddresses.add(destination);
         
-        // User SENT to malicious = they are a VICTIM
+        // ============================================
+        // HISTORICAL VS ACTIVE CHECK:
+        // Past interaction with drainer ≠ current compromise
+        // Only flag as ACTIVE if there's a current exploit vector
+        // ============================================
+        
+        // Check if user has any ACTIVE approvals to this malicious address
+        const hasActiveApproval = approvalEvents.some(a => 
+          a.spender.toLowerCase() === destination &&
+          BigInt(a.value) > BigInt(0)
+        );
+        
+        // This is a HISTORICAL interaction if:
+        // - No active approvals to this address
+        // - Transaction is in the past (it always is)
+        const isHistorical = !hasActiveApproval;
+        
         threats.push({
           id: `victim-sent-to-drainer-${tx.hash}`,
           type: malicious.type || 'WALLET_DRAINER',
-          severity: 'HIGH',
-          title: `⚠️ You Interacted with ${malicious.name || 'Known Malicious Contract'}`,
-          description: `You sent a transaction to "${malicious.name || 'a known malicious contract'}". You may have been phished. Check if any assets were drained.`,
-          technicalDetails: `Drainer Contract: ${destination}\nTransaction: ${tx.hash}\nYour Role: VICTIM (you sent to the scam)`,
+          severity: isHistorical ? 'LOW' : 'HIGH', // Downgrade historical to LOW
+          title: isHistorical 
+            ? `ℹ️ Historical Interaction: ${malicious.name || 'Known Malicious Address'}`
+            : `⚠️ Active Risk: Interacted with ${malicious.name || 'Known Malicious Contract'}`,
+          description: isHistorical
+            ? `You previously interacted with "${malicious.name || 'a known malicious address'}". No active approvals detected – this is historical exposure only.`
+            : `You sent a transaction to "${malicious.name || 'a known malicious contract'}" and may still have active approvals. Review your approvals immediately.`,
+          technicalDetails: `Address: ${destination}\nTransaction: ${tx.hash}\nStatus: ${isHistorical ? 'HISTORICAL (no active access)' : 'ACTIVE RISK'}`,
           detectedAt: new Date().toISOString(),
           relatedAddresses: [destination],
           relatedTransactions: [tx.hash],
-          ongoingRisk: false, // Ongoing risk depends on approvals
+          ongoingRisk: !isHistorical,
+          // NEW: Historical vs Active categorization
+          category: isHistorical ? 'HISTORICAL_EXPOSURE' : 'ACTIVE_RISK',
+          isHistorical,
+          displayLabel: isHistorical ? 'Previously interacted – no active access' : undefined,
+          excludeFromRiskScore: isHistorical, // Historical events don't affect risk score
         });
       }
     }
@@ -1097,7 +1122,7 @@ export class EVMAnalyzer {
     // ============================================
     // CASE 2: User SENT tokens TO a known malicious address
     // ============================================
-    // Same as above - user is the VICTIM
+    // UPDATED: Now checks for active vs historical exposure
     
     for (const transfer of tokenTransfers) {
       if (!transfer?.to || !transfer?.from || !transfer?.hash) continue;
@@ -1109,20 +1134,40 @@ export class EVMAnalyzer {
       if (flaggedAddresses.has(destination)) continue;
       if (isLegitimateContract(destination)) continue;
       
-      const isMaliciousDest = isMaliciousAddress(destination, this.chain) || isDrainerRecipient(destination);
-      if (isMaliciousDest) {
+      const maliciousInfo = isMaliciousAddress(destination, this.chain);
+      const isDrainer = isDrainerRecipient(destination);
+      
+      if (maliciousInfo || isDrainer) {
         flaggedAddresses.add(destination);
+        
+        // Check for active approvals (same as above)
+        const hasActiveApproval = approvalEvents.some(a => 
+          a.spender.toLowerCase() === destination &&
+          BigInt(a.value) > BigInt(0)
+        );
+        
+        const isHistorical = !hasActiveApproval;
+        const drainerName = maliciousInfo?.name || 'known drainer';
+        
         threats.push({
           id: `victim-token-sent-${transfer.hash}`,
           type: 'WALLET_DRAINER',
-          severity: 'HIGH',
-          title: 'Tokens Sent to Known Malicious Address',
-          description: `${transfer.tokenSymbol} tokens were sent to a known drainer address. You may have been phished.`,
-          technicalDetails: `Destination: ${destination}\nToken: ${transfer.tokenSymbol}\nYour Role: VICTIM`,
+          severity: isHistorical ? 'LOW' : 'HIGH',
+          title: isHistorical 
+            ? `ℹ️ Historical Token Transfer to ${drainerName}`
+            : `⚠️ Tokens Sent to Active Malicious Address`,
+          description: isHistorical
+            ? `${transfer.tokenSymbol} tokens were previously sent to ${drainerName}. No active approvals remain – this is historical exposure.`
+            : `${transfer.tokenSymbol} tokens were sent to ${drainerName}. Active approvals may still exist – review immediately.`,
+          technicalDetails: `Destination: ${destination}\nToken: ${transfer.tokenSymbol}\nStatus: ${isHistorical ? 'HISTORICAL' : 'ACTIVE RISK'}`,
           detectedAt: new Date().toISOString(),
           relatedAddresses: [destination],
           relatedTransactions: [transfer.hash],
-          ongoingRisk: false,
+          ongoingRisk: !isHistorical,
+          category: isHistorical ? 'HISTORICAL_EXPOSURE' : 'ACTIVE_RISK',
+          isHistorical,
+          displayLabel: isHistorical ? 'Previously sent – no active access' : undefined,
+          excludeFromRiskScore: isHistorical,
         });
       }
     }
@@ -1798,12 +1843,23 @@ export class EVMAnalyzer {
   private determineRiskLevel(riskScore: number, threats: DetectedThreat[]): RiskLevel {
     const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
     
-    // Check for critical threats
-    const hasCritical = safeThreats.some(t => t?.severity === 'CRITICAL');
+    // ============================================
+    // ONLY COUNT ACTIVE THREATS (exclude historical/resolved)
+    // ============================================
+    const activeThreats = safeThreats.filter(t => 
+      !t.excludeFromRiskScore && 
+      !t.isHistorical && 
+      t.category !== 'HISTORICAL_EXPOSURE' && 
+      t.category !== 'RESOLVED' &&
+      !t.approvalRevoked
+    );
+    
+    // Check for critical ACTIVE threats only
+    const hasCritical = activeThreats.some(t => t?.severity === 'CRITICAL');
     if (hasCritical || riskScore >= 75) return 'CRITICAL';
     
-    // Check for high threats
-    const hasHigh = safeThreats.some(t => t?.severity === 'HIGH');
+    // Check for high ACTIVE threats
+    const hasHigh = activeThreats.some(t => t?.severity === 'HIGH');
     if (hasHigh || riskScore >= 50) return 'HIGH';
     
     // Check for medium threats
@@ -1857,6 +1913,8 @@ export class EVMAnalyzer {
   // ============================================
   // DETECTION: APPROVAL ABUSE
   // ============================================
+  // CRITICAL UPDATE: Now checks if approvals are still ACTIVE on-chain.
+  // Revoked approvals (allowance = 0) are marked as RESOLVED, not active threats.
 
   private detectApprovalAbuse(
     approvalEvents: ApprovalEvent[],
@@ -1864,17 +1922,22 @@ export class EVMAnalyzer {
     userAddress: string
   ): DetectedThreat[] {
     const threats: DetectedThreat[] = [];
+    const processedApprovals = new Set<string>(); // Prevent duplicates
 
     for (const approval of approvalEvents) {
       if (!approval?.spender) continue;
 
       const spenderNormalized = approval.spender.toLowerCase();
+      const approvalKey = `${approval.token}-${spenderNormalized}`;
+      
+      // Prevent duplicate detection for same token-spender pair
+      if (processedApprovals.has(approvalKey)) continue;
+      processedApprovals.add(approvalKey);
       
       // ============================================
       // INFRASTRUCTURE PROTECTION: Skip protected contracts
       // ============================================
       // OpenSea, Uniswap, etc. can NEVER be flagged as malicious spenders.
-      // Users approve these contracts millions of times - this is expected.
       const infraCheck = checkInfrastructureProtection(spenderNormalized, this.chain);
       if (infraCheck.isProtected) {
         console.log(`[detectApprovalAbuse] Spender ${spenderNormalized.slice(0, 10)}... is protected infrastructure (${infraCheck.name}) - skipping`);
@@ -1886,21 +1949,84 @@ export class EVMAnalyzer {
         continue;
       }
 
-      const spenderMalicious = isMaliciousAddress(spenderNormalized, this.chain) || isDrainerRecipient(spenderNormalized);
+      const maliciousInfo = isMaliciousAddress(spenderNormalized, this.chain);
+      const isDrainer = isDrainerRecipient(spenderNormalized);
       
-      if (spenderMalicious) {
-        threats.push({
-          id: `approval-abuse-${approval.transactionHash}`,
-          type: 'APPROVAL_HIJACK',
-          severity: 'CRITICAL',
-          title: 'Approval Granted to Malicious Contract',
-          description: `You approved a known malicious contract to spend your ${approval.tokenSymbol || 'tokens'}. This may have been used to drain your assets.`,
-          technicalDetails: `Spender: ${approval.spender}, Token: ${approval.token}`,
-          detectedAt: new Date().toISOString(),
-          relatedAddresses: [approval.spender],
-          relatedTransactions: [approval.transactionHash],
-          ongoingRisk: true,
-        });
+      if (maliciousInfo || isDrainer) {
+        // ============================================
+        // CRITICAL: Check if approval is still ACTIVE
+        // ============================================
+        // Look for a subsequent approval to 0 (revocation) or check current value
+        const currentApprovalValue = BigInt(approval.value || '0');
+        const isRevoked = currentApprovalValue === BigInt(0);
+        
+        // Also check if there's a more recent approval to 0 for this spender
+        const laterRevocation = approvalEvents.find(a => 
+          a.token.toLowerCase() === approval.token.toLowerCase() &&
+          a.spender.toLowerCase() === spenderNormalized &&
+          a.blockNumber > approval.blockNumber &&
+          BigInt(a.value || '0') === BigInt(0)
+        );
+        
+        const wasRevoked = isRevoked || !!laterRevocation;
+        const drainerName = maliciousInfo?.name || 'known drainer';
+        
+        if (wasRevoked) {
+          // ============================================
+          // RESOLVED: Approval was revoked - mark as historical
+          // ============================================
+          console.log(`[detectApprovalAbuse] Approval to ${drainerName} (${spenderNormalized.slice(0, 10)}...) was REVOKED - marking as resolved`);
+          
+          threats.push({
+            id: `approval-resolved-${approval.transactionHash}`,
+            type: 'APPROVAL_HIJACK',
+            severity: 'LOW', // Downgraded - no longer an active threat
+            title: `✓ Previously Revoked: Approval to ${drainerName}`,
+            description: `You previously approved ${drainerName} to spend your ${approval.tokenSymbol || 'tokens'}, but this approval has been revoked. No active risk remains.`,
+            technicalDetails: `Spender: ${approval.spender}\nToken: ${approval.token}\nStatus: REVOKED - No active access`,
+            detectedAt: new Date().toISOString(),
+            relatedAddresses: [approval.spender],
+            relatedTransactions: [approval.transactionHash],
+            ongoingRisk: false,
+            // Historical/Resolved categorization
+            category: 'RESOLVED',
+            isHistorical: true,
+            approvalRevoked: true,
+            currentAllowance: '0',
+            displayLabel: 'Previously revoked – no active risk',
+            excludeFromRiskScore: true, // CRITICAL: Does NOT affect risk score
+            remediation: {
+              isRemediated: true,
+              remediatedAt: laterRevocation ? new Date(laterRevocation.blockNumber * 1000).toISOString() : undefined,
+              remediationMethod: 'APPROVAL_REVOKED',
+              currentOnChainState: {
+                allowance: '0',
+                hasAccess: false,
+              },
+            },
+          });
+        } else {
+          // ============================================
+          // ACTIVE THREAT: Approval still exists
+          // ============================================
+          threats.push({
+            id: `approval-abuse-${approval.transactionHash}`,
+            type: 'APPROVAL_HIJACK',
+            severity: 'CRITICAL',
+            title: `⚠️ ACTIVE: Approval to ${drainerName}`,
+            description: `You have an ACTIVE approval allowing ${drainerName} to spend your ${approval.tokenSymbol || 'tokens'}. Revoke this approval immediately!`,
+            technicalDetails: `Spender: ${approval.spender}\nToken: ${approval.token}\nStatus: ACTIVE - Can drain your tokens`,
+            detectedAt: new Date().toISOString(),
+            relatedAddresses: [approval.spender],
+            relatedTransactions: [approval.transactionHash],
+            ongoingRisk: true,
+            category: 'ACTIVE_RISK',
+            isHistorical: false,
+            approvalRevoked: false,
+            currentAllowance: approval.value,
+            excludeFromRiskScore: false, // This DOES affect risk score
+          });
+        }
       }
     }
 
@@ -2274,7 +2400,30 @@ export class EVMAnalyzer {
     // ============================================
     // THREAT SCORING (based on severity and type)
     // ============================================
+    // CRITICAL UPDATE: Only count ACTIVE threats toward risk score.
+    // Historical/resolved threats are excluded.
     for (const threat of safeThreats) {
+      // ============================================
+      // SKIP HISTORICAL/RESOLVED THREATS
+      // ============================================
+      // These events happened in the past and are no longer active risks.
+      // They should NOT affect the risk score.
+      if (threat.excludeFromRiskScore === true) {
+        console.log(`[RiskScore] Excluding "${threat.title}" from risk score (historical/resolved)`);
+        continue;
+      }
+      
+      if (threat.isHistorical === true || threat.category === 'HISTORICAL_EXPOSURE' || threat.category === 'RESOLVED') {
+        console.log(`[RiskScore] Excluding "${threat.title}" from risk score (category: ${threat.category || 'historical'})`);
+        continue;
+      }
+      
+      // Also skip if approval was revoked (current allowance = 0)
+      if (threat.approvalRevoked === true || threat.currentAllowance === '0') {
+        console.log(`[RiskScore] Excluding "${threat.title}" from risk score (approval revoked)`);
+        continue;
+      }
+      
       let weight = 0;
       let factorType: RiskFactorType = 'INDIRECT_CONTACT';
 
@@ -2297,28 +2446,38 @@ export class EVMAnalyzer {
           weight = 45; // This wallet IS a drainer
           factorType = 'TRANSFERFROM_INITIATED';
         } else {
-          weight = threat.ongoingRisk ? 30 : 20; // User is victim
+          // ONLY count if ongoing risk - historical interactions = 0
+          weight = threat.ongoingRisk ? 30 : 0; // User is victim but no ongoing risk = 0
           factorType = 'SENT_TO_DRAINER';
         }
-        factors.push({
-          id: `threat-${threat.id}`,
-          type: factorType,
-          weight,
-          description: threat.title,
-          evidence: threat.relatedTransactions,
-        });
+        
+        // Don't add factor if weight is 0
+        if (weight > 0) {
+          factors.push({
+            id: `threat-${threat.id}`,
+            type: factorType,
+            weight,
+            description: threat.title,
+            evidence: threat.relatedTransactions,
+          });
+        }
       }
       // Approval issues
       else if (threat.type === 'APPROVAL_HIJACK') {
-        weight = threat.ongoingRisk ? 35 : 20;
+        // ONLY count if ongoing risk (active approval)
+        // Revoked approvals = 0 weight
+        weight = threat.ongoingRisk ? 35 : 0;
         factorType = 'APPROVAL_TO_MALICIOUS';
-        factors.push({
-          id: `threat-${threat.id}`,
-          type: factorType,
-          weight,
-          description: threat.title,
-          evidence: threat.relatedAddresses,
-        });
+        
+        if (weight > 0) {
+          factors.push({
+            id: `threat-${threat.id}`,
+            type: factorType,
+            weight,
+            description: threat.title,
+            evidence: threat.relatedAddresses,
+          });
+        }
       }
       // Other threats
       else {
@@ -2413,24 +2572,54 @@ export class EVMAnalyzer {
     const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
     
     // ============================================
-    // CRITICAL RULE 0: CRITICAL threats ALWAYS override everything
+    // SEPARATE ACTIVE VS HISTORICAL THREATS
     // ============================================
-    // If we detected CRITICAL threats (e.g., wallet is a known drainer),
+    // CRITICAL: Only ACTIVE threats should affect security status.
+    // Historical/resolved threats are informational only.
+    const activeThreats = safeThreats.filter(t => 
+      !t.excludeFromRiskScore && 
+      !t.isHistorical && 
+      t.category !== 'HISTORICAL_EXPOSURE' && 
+      t.category !== 'RESOLVED' &&
+      !t.approvalRevoked
+    );
+    
+    const historicalThreats = safeThreats.filter(t => 
+      t.excludeFromRiskScore || 
+      t.isHistorical || 
+      t.category === 'HISTORICAL_EXPOSURE' || 
+      t.category === 'RESOLVED' ||
+      t.approvalRevoked
+    );
+    
+    console.log(`[SECURITY] Threats breakdown: ${activeThreats.length} active, ${historicalThreats.length} historical/resolved`);
+    
+    // ============================================
+    // CRITICAL RULE 0: Only ACTIVE CRITICAL threats override everything
+    // ============================================
+    // If we detected CRITICAL ACTIVE threats (e.g., wallet is a known drainer),
     // that takes absolute priority over compromise analysis
-    const criticalThreats = safeThreats.filter(t => t?.severity === 'CRITICAL');
-    if (criticalThreats.length > 0) {
-      console.log(`[SECURITY] ${criticalThreats.length} CRITICAL threat(s) detected - marking ACTIVELY_COMPROMISED`);
+    const criticalActiveThreats = activeThreats.filter(t => t?.severity === 'CRITICAL');
+    if (criticalActiveThreats.length > 0) {
+      console.log(`[SECURITY] ${criticalActiveThreats.length} CRITICAL ACTIVE threat(s) detected - marking ACTIVELY_COMPROMISED`);
       return 'ACTIVELY_COMPROMISED';
     }
     
     // ============================================
-    // CRITICAL RULE: 0 threats + 0 risk score = SAFE
+    // RULE: 0 ACTIVE threats + 0 risk score = Check for historical
     // ============================================
-    // This MUST be checked first to prevent false "potentially compromised" states
-    // when data is complete but clean
-    if (safeThreats.length === 0 && riskScore === 0 && compromiseAnalysis.evidence.length === 0) {
-      console.log(`[SECURITY] No threats, no risk score, no evidence - wallet is SAFE`);
-      return 'SAFE';
+    if (activeThreats.length === 0 && riskScore === 0) {
+      // If there are historical threats but no active ones, use PREVIOUSLY_COMPROMISED
+      if (historicalThreats.length > 0) {
+        console.log(`[SECURITY] No active threats but ${historicalThreats.length} historical - marking PREVIOUSLY_COMPROMISED`);
+        return 'PREVIOUSLY_COMPROMISED';
+      }
+      
+      // Truly clean - no threats at all
+      if (compromiseAnalysis.evidence.length === 0) {
+        console.log(`[SECURITY] No threats, no risk score, no evidence - wallet is SAFE`);
+        return 'SAFE';
+      }
     }
     
     // ============================================
@@ -2450,11 +2639,11 @@ export class EVMAnalyzer {
     }
     
     // ============================================
-    // RULE 2: HIGH severity threats = AT_RISK
+    // RULE 2: HIGH severity ACTIVE threats = AT_RISK
     // ============================================
-    const highThreats = safeThreats.filter(t => t?.severity === 'HIGH');
-    if (highThreats.length > 0) {
-      console.log(`[SECURITY] ${highThreats.length} HIGH threat(s) detected - marking AT_RISK`);
+    const highActiveThreats = activeThreats.filter(t => t?.severity === 'HIGH');
+    if (highActiveThreats.length > 0) {
+      console.log(`[SECURITY] ${highActiveThreats.length} HIGH ACTIVE threat(s) detected - marking AT_RISK`);
       return 'AT_RISK';
     }
     
@@ -2675,7 +2864,16 @@ export class EVMAnalyzer {
     // PREVIOUSLY_COMPROMISED - Historical incident, no active threat
     // ============================================
     if (status === 'PREVIOUSLY_COMPROMISED') {
-      return 'Previously compromised. No active malicious access detected. All related approvals have been revoked. Safe to use with caution.';
+      const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
+      const historicalCount = safeThreats.filter(t => 
+        t.isHistorical || t.category === 'HISTORICAL_EXPOSURE' || t.category === 'RESOLVED'
+      ).length;
+      const resolvedCount = safeThreats.filter(t => t.category === 'RESOLVED' || t.approvalRevoked).length;
+      
+      if (resolvedCount > 0) {
+        return `Previously at risk. ${resolvedCount} issue(s) have been remediated (approvals revoked). No active malicious access detected. Safe to use with normal caution.`;
+      }
+      return `Historical exposure detected. ${historicalCount} past interaction(s) with flagged addresses, but no active risk. Approvals have been revoked.`;
     }
     
     // ============================================

@@ -549,6 +549,24 @@ export interface ClassificationEvidence {
   transactions?: string[];
 }
 
+// Threat category - distinguishes historical exposure from active risk
+export type ThreatCategory = 
+  | 'ACTIVE_RISK'           // Current exploit vector exists (affects risk score)
+  | 'HISTORICAL_EXPOSURE'   // Past interaction, no current risk (informational only)
+  | 'RESOLVED';             // Was a threat, now remediated (e.g., approval revoked)
+
+// Remediation status for threats that can be resolved
+export interface ThreatRemediationStatus {
+  isRemediated: boolean;
+  remediatedAt?: string;           // ISO timestamp of remediation
+  remediationTxHash?: string;      // Transaction that resolved the threat
+  remediationMethod?: 'APPROVAL_REVOKED' | 'FUNDS_MOVED' | 'CONTRACT_PAUSED' | 'OTHER';
+  currentOnChainState?: {
+    allowance?: string;            // Current allowance (0 if revoked)
+    hasAccess?: boolean;           // Does the attacker still have access?
+  };
+}
+
 export interface DetectedThreat {
   id: string;
   type: AttackType;
@@ -568,6 +586,21 @@ export interface DetectedThreat {
     avgResponseTime?: number;
     totalStolen?: string;
   };
+  
+  // ============================================
+  // NEW: Historical vs Active Threat Classification
+  // ============================================
+  category?: ThreatCategory;              // Whether this is active or historical
+  isHistorical?: boolean;                 // True if this is a past event, not current risk
+  remediation?: ThreatRemediationStatus;  // Remediation status if applicable
+  
+  // For approval-based threats: current on-chain state
+  currentAllowance?: string;              // Current allowance (fetched on-chain)
+  approvalRevoked?: boolean;              // True if approval was revoked
+  
+  // Display override for historical threats
+  displayLabel?: string;                  // Override label for UI (e.g., "Previously revoked – no active risk")
+  excludeFromRiskScore?: boolean;         // True if this should NOT affect risk score
 }
 
 export interface TokenApproval {

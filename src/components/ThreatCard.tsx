@@ -46,6 +46,17 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
 
   const typeInfo = attackTypeInfo[threat?.type] || attackTypeInfo.UNKNOWN;
   const Icon = typeInfo.icon;
+  
+  // ============================================
+  // HISTORICAL VS ACTIVE THREAT STYLING
+  // ============================================
+  const isHistorical = threat?.isHistorical || 
+                       threat?.category === 'HISTORICAL_EXPOSURE' || 
+                       threat?.category === 'RESOLVED' ||
+                       threat?.approvalRevoked === true ||
+                       threat?.excludeFromRiskScore === true;
+  
+  const isResolved = threat?.category === 'RESOLVED' || threat?.approvalRevoked === true;
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -73,11 +84,20 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
     return `${explorers[chain] || explorers.ethereum}${hash}`;
   };
 
+  // Get border color based on status
+  const getBorderClass = () => {
+    if (isResolved) return 'border-l-4 border-l-green-500/50'; // Green for resolved
+    if (isHistorical) return 'border-l-4 border-l-gray-400/30'; // Gray for historical
+    if (threat.severity === 'CRITICAL') return 'border-l-4 border-l-status-danger';
+    if (threat.severity === 'HIGH') return 'border-l-4 border-l-orange-500';
+    return '';
+  };
+
   return (
     <motion.div
       layout
-      className={`glass-card rounded-xl overflow-hidden ${
-        threat.severity === 'CRITICAL' ? 'border-l-4 border-l-status-danger' : ''
+      className={`glass-card rounded-xl overflow-hidden ${getBorderClass()} ${
+        isHistorical ? 'opacity-75' : '' // Reduce opacity for historical
       }`}
     >
       {/* Header */}
@@ -92,17 +112,35 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
 
         {/* Content */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <h3 className="font-display font-semibold text-sentinel-text">{threat.title}</h3>
-            {threat.ongoingRisk && (
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <h3 className={`font-display font-semibold ${isHistorical ? 'text-sentinel-muted' : 'text-sentinel-text'}`}>
+              {threat.displayLabel || threat.title}
+            </h3>
+            {/* Status badges */}
+            {isResolved ? (
+              <span className="px-2 py-0.5 text-xs bg-green-500/10 text-green-400 rounded-full border border-green-500/20">
+                ✓ Resolved
+              </span>
+            ) : isHistorical ? (
+              <span className="px-2 py-0.5 text-xs bg-gray-500/10 text-gray-400 rounded-full border border-gray-500/20">
+                Historical
+              </span>
+            ) : threat.ongoingRisk && (
               <span className="px-2 py-0.5 text-xs bg-status-danger-bg text-status-danger rounded-full animate-pulse">
                 Active Risk
               </span>
             )}
           </div>
-          <p className="text-sm text-sentinel-muted line-clamp-2">{threat.description}</p>
-          <div className="flex items-center gap-4 mt-2">
-            <SeverityBadge severity={threat.severity} />
+          <p className={`text-sm line-clamp-2 ${isHistorical ? 'text-sentinel-muted/70' : 'text-sentinel-muted'}`}>
+            {threat.description}
+          </p>
+          <div className="flex items-center gap-4 mt-2 flex-wrap">
+            {!isHistorical && <SeverityBadge severity={threat.severity} />}
+            {isHistorical && (
+              <span className="text-xs text-gray-500 bg-gray-500/10 px-2 py-0.5 rounded">
+                No Risk Score Impact
+              </span>
+            )}
             <span className="text-xs text-sentinel-muted">{typeInfo.label}</span>
             <span className="text-xs text-sentinel-muted">
               Detected {new Date(threat.detectedAt).toLocaleDateString()}
