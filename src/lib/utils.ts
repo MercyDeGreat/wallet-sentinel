@@ -142,6 +142,7 @@ export function getSecurityStatusColor(status: SecurityStatus): string {
     POTENTIALLY_COMPROMISED: 'text-orange-400',
     AT_RISK: 'text-status-warning',
     COMPROMISED: 'text-status-danger',
+    INCOMPLETE_DATA: 'text-gray-400', // Neutral gray for incomplete data
   };
   return colors[status];
 }

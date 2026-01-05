@@ -31,6 +31,8 @@ import {
   ChainAnalysisMetadata,
   SOLANA_SECURITY_DISCLAIMER,
   CHAIN_ANALYSIS_METADATA,
+  SECONDARY_TAGS,
+  SecondaryTagInfo,
 } from '@/types';
 import { CHAIN_RPC_CONFIG, SOLANA_MALICIOUS_PROGRAMS } from '../detection/malicious-database';
 
@@ -490,6 +492,9 @@ export class SolanaAnalyzer {
                        'This does NOT guarantee the wallet is safe from all threats.',
           disclaimer: SOLANA_SECURITY_DISCLAIMER,
           isDefinitiveSafe: false, // NEVER true for Solana
+          // Secondary tag: Indicate that off-chain compromise is always possible for Solana
+          // This does NOT affect risk score - it's purely informational
+          secondaryTags: [SECONDARY_TAGS.HISTORICAL_OFFCHAIN_COMPROMISE_POSSIBLE],
         };
     }
   }

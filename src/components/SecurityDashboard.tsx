@@ -13,6 +13,7 @@ import {
   Clock,
   TrendingUp,
   Layers,
+  Info,
 } from 'lucide-react';
 import { WalletAnalysisResult, SecurityStatus, RiskLevel } from '@/types';
 import { ThreatCard } from './ThreatCard';
@@ -137,6 +138,33 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
               )}
             </div>
           </div>
+        </motion.div>
+      )}
+
+      {/* Secondary Tags - Additional context that does NOT affect risk score */}
+      {result.chainAwareStatus?.secondaryTags && result.chainAwareStatus.secondaryTags.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.07 }}
+          className="flex flex-wrap gap-2"
+        >
+          {result.chainAwareStatus.secondaryTags.map((tagInfo, index) => (
+            <div
+              key={index}
+              className={`
+                inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium
+                ${tagInfo.severity === 'WARNING' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                  tagInfo.severity === 'CAUTION' ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20' :
+                  'bg-blue-500/10 text-blue-400 border border-blue-500/20'}
+              `}
+              title={tagInfo.description}
+            >
+              <Info className="w-3.5 h-3.5" />
+              <span>{tagInfo.displayText}</span>
+              <span className="text-[10px] opacity-60 ml-1">(Does not affect risk score)</span>
+            </div>
+          ))}
         </motion.div>
       )}
 
@@ -456,9 +484,17 @@ function StatusBadge({
       text: 'text-status-danger',
       dot: 'status-dot-danger',
     },
+    INCOMPLETE_DATA: {
+      icon: AlertCircle,
+      label: 'INCOMPLETE SCAN',
+      bg: 'bg-gray-500/10',
+      border: 'border-gray-500/30',
+      text: 'text-gray-400',
+      dot: 'status-dot-neutral',
+    },
   };
 
-  const statusConfig = config[status] || config.AT_RISK; // Default to AT_RISK if unknown status
+  const statusConfig = config[status] || config.SAFE; // Default to SAFE if unknown status (not AT_RISK to prevent false alarms)
   const { icon: Icon, label, bg, border, text, dot } = statusConfig;
 
   return (

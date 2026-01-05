@@ -21,9 +21,30 @@ export type Chain = 'ethereum' | 'base' | 'bnb' | 'solana';
 // - Zero indirect exposure to confirmed drainers
 export type SecurityStatus = 
   | 'SAFE'                      // Absolutely no risk indicators (strict verification required)
-  | 'POTENTIALLY_COMPROMISED'   // Uncertainty exists - cannot confirm safety
+  | 'POTENTIALLY_COMPROMISED'   // At least one concrete risk signal exists
   | 'AT_RISK'                   // Active risk indicators present
-  | 'COMPROMISED';              // Confirmed compromise evidence
+  | 'COMPROMISED'               // Confirmed compromise evidence
+  | 'INCOMPLETE_DATA';          // Analysis could not complete (RPC failure, partial history)
+
+// Analysis completeness - tracks whether we have full data to make a determination
+export type AnalysisCompleteness = 
+  | 'COMPLETE'                  // All data fetched successfully
+  | 'PARTIAL_HISTORY'           // Transaction history may be incomplete
+  | 'RPC_FAILURE'               // RPC calls failed
+  | 'UNSUPPORTED_CHAIN'         // Chain not fully supported
+  | 'RATE_LIMITED';             // API rate limits hit
+
+// Analysis completeness info
+export interface AnalysisCompletenessInfo {
+  status: AnalysisCompleteness;
+  dataAvailable: {
+    transactions: boolean;
+    tokenTransfers: boolean;
+    approvals: boolean;
+    balance: boolean;
+  };
+  warnings?: string[];
+}
 
 // Reason codes for compromise detection
 export type CompromiseReasonCode =
@@ -68,6 +89,58 @@ export type SolanaSecurityStatus =
   | 'AT_RISK'                    // On-chain risk indicators found
   | 'COMPROMISED';               // Strong on-chain evidence of compromise
 
+// Secondary tags that provide additional context without affecting risk score
+export type SecondarySecurityTag = 
+  | 'HISTORICAL_OFFCHAIN_COMPROMISE_POSSIBLE'  // For Solana - off-chain attacks may have occurred
+  | 'UNKNOWN_CONTRACT_INTERACTIONS'             // Interacted with unverified contracts
+  | 'HIGH_VALUE_TARGET'                         // Wallet holds significant value
+  | 'INACTIVE_WALLET';                          // Wallet has been inactive for extended period
+
+export interface SecondaryTagInfo {
+  tag: SecondarySecurityTag;
+  displayText: string;
+  shortText: string;
+  description: string;
+  severity: 'INFO' | 'WARNING' | 'CAUTION';
+  affectsRiskScore: false; // NEVER affects risk score
+}
+
+// Pre-defined secondary tags
+export const SECONDARY_TAGS: Record<SecondarySecurityTag, SecondaryTagInfo> = {
+  HISTORICAL_OFFCHAIN_COMPROMISE_POSSIBLE: {
+    tag: 'HISTORICAL_OFFCHAIN_COMPROMISE_POSSIBLE',
+    displayText: 'Historical Compromise Possible (Off-Chain)',
+    shortText: 'Off-Chain Risk',
+    description: 'This wallet may have been compromised through off-chain methods (phishing, session hijack) that leave no on-chain trace.',
+    severity: 'CAUTION',
+    affectsRiskScore: false,
+  },
+  UNKNOWN_CONTRACT_INTERACTIONS: {
+    tag: 'UNKNOWN_CONTRACT_INTERACTIONS',
+    displayText: 'Unknown Contract Interactions',
+    shortText: 'Unverified Contracts',
+    description: 'This wallet has interacted with contracts that could not be verified.',
+    severity: 'INFO',
+    affectsRiskScore: false,
+  },
+  HIGH_VALUE_TARGET: {
+    tag: 'HIGH_VALUE_TARGET',
+    displayText: 'High Value Target',
+    shortText: 'High Value',
+    description: 'This wallet holds significant assets and may be a target for attackers.',
+    severity: 'WARNING',
+    affectsRiskScore: false,
+  },
+  INACTIVE_WALLET: {
+    tag: 'INACTIVE_WALLET',
+    displayText: 'Inactive Wallet',
+    shortText: 'Inactive',
+    description: 'This wallet has been inactive for an extended period.',
+    severity: 'INFO',
+    affectsRiskScore: false,
+  },
+};
+
 // Display labels for security status (chain-aware)
 export interface ChainAwareSecurityLabel {
   status: SecurityStatus | SolanaSecurityStatus;
@@ -76,6 +149,7 @@ export interface ChainAwareSecurityLabel {
   description: string;
   disclaimer?: string;
   isDefinitiveSafe: boolean;  // FALSE for Solana - absence of evidence ≠ safe
+  secondaryTags?: SecondaryTagInfo[];  // Additional context tags (do NOT affect risk score)
 }
 
 // Chain-specific analysis metadata

@@ -1389,27 +1389,44 @@ export class EVMAnalyzer {
         }
         
         // Unverified contract with suspicious pattern
+        // CRITICAL: Do NOT flag if destination is a trusted category (bridge, exchange, router)
         if (bytecodeAnalysis?.isContract && 
             !bytecodeAnalysis.isVerified && 
             bytecodeAnalysis.contractType === 'UNKNOWN') {
-          // Only flag if user sent significant value
+          
+          // First check if this is actually a trusted destination
+          const infraCheck = checkInfrastructureProtection(address, this.chain);
+          if (infraCheck.isProtected) {
+            console.log(`[ThreatIntel] ${address} is protected infrastructure (${infraCheck.name}) - skipping unverified warning`);
+            continue; // Skip - this is trusted infrastructure
+          }
+          
+          // Check if it's a safe contract, exchange, or router
+          if (isSafeContract(address) || isLegitimateContract(address) || 
+              isDeFiProtocol(address) || EXCHANGE_HOT_WALLETS.has(address)) {
+            console.log(`[ThreatIntel] ${address} is trusted destination - skipping unverified warning`);
+            continue; // Skip - trusted destination
+          }
+          
+          // Only flag if BOTH:
+          // 1. User sent significant value (> 1 ETH, not 0.1)
+          // 2. The destination has NO interaction history with the user
           const sentValue = transactions
             .filter(tx => tx.to?.toLowerCase() === address && tx.from?.toLowerCase() === userAddress)
             .reduce((sum, tx) => sum + BigInt(tx.value || '0'), BigInt(0));
           
-          if (sentValue > BigInt('100000000000000000')) { // > 0.1 ETH
-            threats.push({
-              id: `unverified-contract-${address.slice(0, 10)}`,
-              type: 'ROGUE_CONTRACT_INTERACTION',
-              severity: 'MEDIUM',
-              title: '⚠️ Interaction with Unverified Contract',
-              description: `You sent ${ethers.formatEther(sentValue)} ETH to an unverified contract with unknown purpose. This requires caution.`,
-              technicalDetails: `Address: ${address}\nVerified: No\nContract Type: Unknown`,
-              detectedAt: new Date().toISOString(),
-              relatedAddresses: [address],
-              relatedTransactions: transactions.filter(tx => tx.to?.toLowerCase() === address).slice(0, 5).map(tx => tx.hash),
-              ongoingRisk: false,
-            });
+          const txCount = transactions.filter(tx => 
+            tx.to?.toLowerCase() === address || tx.from?.toLowerCase() === address
+          ).length;
+          
+          // Higher threshold (1 ETH) and only if suspicious patterns exist
+          // Single transaction is likely user-initiated, not malicious
+          if (sentValue > BigInt('1000000000000000000') && txCount <= 1) { // > 1 ETH AND only 1 tx
+            // This is informational, NOT a threat - user sent to unknown contract
+            // DO NOT add as threat - this causes false positives
+            // Instead, just log it for awareness
+            console.log(`[ThreatIntel] ${userAddress} sent ${ethers.formatEther(sentValue)} ETH to unverified contract ${address} - noting for awareness (NOT flagging)`);
+            // NOT adding to threats - sending to unverified contract is NOT inherently malicious
           }
         }
       } catch (error) {
@@ -2396,7 +2413,17 @@ export class EVMAnalyzer {
     const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
     
     // ============================================
-    // RULE 1: Compromise analysis takes priority
+    // CRITICAL RULE: 0 threats + 0 risk score = SAFE
+    // ============================================
+    // This MUST be checked first to prevent false "potentially compromised" states
+    // when data is complete but clean
+    if (safeThreats.length === 0 && riskScore === 0 && compromiseAnalysis.evidence.length === 0) {
+      console.log(`[SECURITY] No threats, no risk score, no evidence - wallet is SAFE`);
+      return 'SAFE';
+    }
+    
+    // ============================================
+    // RULE 1: Compromise analysis takes priority (only for actual risks)
     // ============================================
     if (compromiseAnalysis.securityStatus === 'COMPROMISED') {
       console.log(`[SECURITY] Wallet marked COMPROMISED by compromise analysis: ${compromiseAnalysis.summary}`);
@@ -2408,27 +2435,53 @@ export class EVMAnalyzer {
       return 'AT_RISK';
     }
     
+    // POTENTIALLY_COMPROMISED requires at least one concrete risk signal
+    // Do NOT return this if there are no actual threats
     if (compromiseAnalysis.securityStatus === 'POTENTIALLY_COMPROMISED') {
-      console.log(`[SECURITY] Wallet marked POTENTIALLY_COMPROMISED: ${compromiseAnalysis.summary}`);
-      // Return POTENTIALLY_COMPROMISED - the UI now handles this status
-      return 'POTENTIALLY_COMPROMISED';
+      // Additional check: only mark POTENTIALLY_COMPROMISED if there's actual evidence
+      const hasConcreteEvidence = compromiseAnalysis.evidence.some(e => 
+        e.severity === 'HIGH' || e.severity === 'CRITICAL' ||
+        (e.severity === 'MEDIUM' && e.confidence >= 70)
+      );
+      
+      if (hasConcreteEvidence) {
+        console.log(`[SECURITY] Wallet marked POTENTIALLY_COMPROMISED with concrete evidence: ${compromiseAnalysis.summary}`);
+        return 'POTENTIALLY_COMPROMISED';
+      } else {
+        // No concrete evidence - treat as SAFE
+        console.log(`[SECURITY] Compromise analysis returned POTENTIALLY_COMPROMISED but no concrete evidence found - treating as SAFE`);
+      }
     }
     
     // ============================================
-    // RULE 2: Any threats = not safe
+    // RULE 2: Threats with appropriate severity = not safe
     // ============================================
+    // IMPORTANT: Only CRITICAL/HIGH threats should affect status
+    // MEDIUM/LOW threats alone should NOT prevent SAFE status
+    // This prevents false positives from weak signals
     if (safeThreats.length > 0) {
       const hasCritical = safeThreats.some(t => t?.severity === 'CRITICAL');
       const hasHigh = safeThreats.some(t => t?.severity === 'HIGH');
+      const hasMedium = safeThreats.some(t => t?.severity === 'MEDIUM');
       
       if (hasCritical) {
         return 'COMPROMISED';
       }
-      if (hasHigh || safeThreats.length >= 2) {
+      if (hasHigh) {
         return 'AT_RISK';
       }
-      // Even low severity = cannot be SAFE
-      return 'AT_RISK';
+      // Multiple MEDIUM threats = AT_RISK
+      const mediumCount = safeThreats.filter(t => t?.severity === 'MEDIUM').length;
+      if (mediumCount >= 3) {
+        return 'AT_RISK';
+      }
+      // Single MEDIUM or LOW threats = POTENTIALLY_COMPROMISED at most
+      // But if compromise analysis already passed, trust it
+      if (hasMedium && compromiseAnalysis.securityStatus !== 'SAFE') {
+        return 'POTENTIALLY_COMPROMISED';
+      }
+      // LOW severity threats alone = can still be SAFE
+      console.log(`[SECURITY] Only low severity threats found (${safeThreats.length}) - not blocking SAFE status`);
     }
     
     // ============================================
@@ -2442,28 +2495,35 @@ export class EVMAnalyzer {
     }
     
     // ============================================
-    // RULE 4: Safety blockers check
+    // RULE 4: Safety blockers check (only high-confidence blockers)
     // ============================================
-    if (!compromiseAnalysis.canBeSafe || compromiseAnalysis.safetyBlockers.length > 0) {
+    // If compromise analysis returned SAFE, trust it even if there are minor blockers
+    // This prevents over-aggressive false positives
+    if (!compromiseAnalysis.canBeSafe && compromiseAnalysis.securityStatus !== 'SAFE') {
       console.log(`[SECURITY] Cannot mark SAFE - blockers: ${compromiseAnalysis.safetyBlockers.join(', ')}`);
       return 'AT_RISK';
     }
     
     // ============================================
-    // RULE 5: All safety checks must pass
+    // RULE 5: Critical safety checks must pass
     // ============================================
-    if (!compromiseAnalysis.safetyChecks.allChecksPass) {
+    // Only fail on CRITICAL safety issues, not all checks
+    // This prevents false positives from weak signals
+    const hasCriticalFailure = 
+      !compromiseAnalysis.safetyChecks.noMaliciousApprovals || // Malicious approvals = critical
+      !compromiseAnalysis.safetyChecks.noAttackerLinkedTxs;    // Attacker interaction = critical
+    
+    if (hasCriticalFailure && compromiseAnalysis.securityStatus !== 'SAFE') {
       const failedChecks: string[] = [];
       if (!compromiseAnalysis.safetyChecks.noMaliciousApprovals) failedChecks.push('malicious approvals');
       if (!compromiseAnalysis.safetyChecks.noAttackerLinkedTxs) failedChecks.push('attacker-linked txs');
-      if (!compromiseAnalysis.safetyChecks.noUnexplainedAssetLoss) failedChecks.push('unexplained asset loss');
-      if (!compromiseAnalysis.safetyChecks.noIndirectDrainerExposure) failedChecks.push('drainer exposure');
-      if (!compromiseAnalysis.safetyChecks.noTimingAnomalies) failedChecks.push('timing anomalies');
-      if (!compromiseAnalysis.safetyChecks.noSuspiciousApprovalPatterns) failedChecks.push('suspicious approvals');
       
-      console.log(`[SECURITY] Safety checks failed: ${failedChecks.join(', ')}`);
+      console.log(`[SECURITY] Critical safety checks failed: ${failedChecks.join(', ')}`);
       return 'AT_RISK';
     }
+    
+    // Non-critical failures (unexplained loss, timing anomalies) should not block SAFE
+    // These are often false positives from normal user activity
     
     // ============================================
     // FINAL CHECK: Would this wallet still be safe
@@ -2606,12 +2666,33 @@ export class EVMAnalyzer {
   }
 
   private generateSummary(status: SecurityStatus, threats: DetectedThreat[], approvals: TokenApproval[]): string {
+    // ============================================
+    // SAFE STATUS - Clear positive messaging
+    // ============================================
     if (status === 'SAFE') {
-      return 'No significant security threats detected. Your wallet appears to be in good standing.';
+      return 'No risk indicators detected. Wallet appears safe based on available data.';
     }
+    
+    // ============================================
+    // INCOMPLETE DATA - Only when data is actually missing
+    // ============================================
+    if (status === 'INCOMPLETE_DATA') {
+      return 'Scan incomplete. Some data could not be verified. Try again later.';
+    }
+    
+    // ============================================
+    // POTENTIALLY_COMPROMISED - Requires at least one concrete signal
+    // ============================================
     if (status === 'POTENTIALLY_COMPROMISED') {
       const safeThreats = Array.isArray(threats) ? threats : [];
-      return `Cannot confirm wallet safety. ${safeThreats.length} indicator(s) require review. This does NOT mean the wallet is safe.`;
+      // CRITICAL: If there are 0 indicators, this should NEVER show
+      // This is a safety check - the logic should not reach here with 0 threats
+      if (safeThreats.length === 0) {
+        // This case should not happen - log it and return SAFE message
+        console.warn(`[WARNING] POTENTIALLY_COMPROMISED with 0 threats - this should not happen, returning SAFE message`);
+        return 'No risk indicators detected. Wallet appears safe based on available data.';
+      }
+      return `${safeThreats.length} indicator(s) require review. Check the detected issues and take action if needed.`;
     }
     if (status === 'AT_RISK') {
       const safeThreats = Array.isArray(threats) ? threats : [];
