@@ -67,7 +67,7 @@ export default function HomePage() {
                 className="inline-flex items-center justify-center w-24 h-24 mb-6"
               >
                 <img 
-                  src="/logo.svg" 
+                  src="/logo.png" 
                   alt="Securnex" 
                   className="w-full h-full drop-shadow-[0_0_20px_rgba(0,212,255,0.5)]"
                 />

@@ -28,7 +28,7 @@ export function Header() {
           {/* Logo */}
           <div className="relative w-10 h-10">
             <Image
-              src="/logo.svg"
+              src="/logo.png"
               alt="Securnex Logo"
               width={40}
               height={40}
