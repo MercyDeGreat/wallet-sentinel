@@ -40,6 +40,7 @@ import {
   isSafeContract,
   checkAddressSafety,
   SafeContract,
+  isDEXRouterOnChain,
 } from './safe-contracts';
 import {
   classifyContract,
@@ -47,6 +48,22 @@ import {
   shouldExcludeFromMaliciousFlagging,
   getSafetyExplanation,
 } from './contract-classifier';
+import {
+  checkInfrastructureProtection,
+  isVerifiedDEXRouter,
+  checkBaseDEXActivity,
+  isNormalDEXActivityOnly,
+} from './infrastructure-protection';
+import {
+  checkBaseProtocolInteraction,
+  checkSelfTransfer,
+  checkExchangeWallet,
+  classifyBaseChainWallet,
+  determineCompromiseState,
+  ENS_BASE_CONTRACTS,
+  BASE_BRIDGE_CONTRACTS,
+  EXCHANGE_WALLETS,
+} from './base-chain-protection';
 import {
   analyzeWalletBehavior,
   BehaviorAnalysisResult,
@@ -176,6 +193,9 @@ export interface ApprovalData {
 /**
  * Main threat detection function.
  * NOW includes contract classification to prevent false positives.
+ * 
+ * RULE: DEX interaction alone ≠ compromise signal
+ * A wallet should NEVER be flagged as compromised solely for making a Uniswap transaction.
  */
 export async function detectDrainerPatterns(
   transactions: TransactionData[],
@@ -185,6 +205,7 @@ export async function detectDrainerPatterns(
   threats: DetectedThreat[];
   behaviorAnalysis: BehaviorAnalysisResult;
   excludedFromFlagging: string[];
+  isDEXOnlyActivity?: boolean;
 }> {
   const threats: DetectedThreat[] = [];
   const excludedFromFlagging: string[] = [];
@@ -218,6 +239,207 @@ export async function detectDrainerPatterns(
         },
       },
       excludedFromFlagging: [],
+      isDEXOnlyActivity: false,
+    };
+  }
+  
+  // ============================================
+  // STEP 0a: BASE CHAIN SPECIFIC - SELF-TRANSFER CHECK
+  // ============================================
+  // RULE 2: Self-transfers are ALWAYS safe
+  const selfTransferTxs = safeTxs.filter(tx => {
+    const selfCheck = checkSelfTransfer(tx.from, tx.to);
+    return selfCheck.isSelfTransfer;
+  });
+  
+  // If ALL transactions are self-transfers, wallet is SAFE
+  if (selfTransferTxs.length === safeTxs.length && safeTxs.length > 0) {
+    return {
+      threats: [],
+      behaviorAnalysis: {
+        classification: 'NORMAL_USER',
+        walletRole: 'UNKNOWN',
+        confidence: 100,
+        isDefinitelyMalicious: false,
+        isProbablyMalicious: false,
+        showCriticalAlert: false,
+        explanation: 'All transactions are self-transfers (wallet reorganization). Risk = 0.',
+        evidence: [{
+          type: 'USER_INTENT_SIGNALS',
+          description: 'Self-transfer detected - normal wallet reorganization',
+          weight: -100,
+          data: { chain, selfTransferCount: selfTransferTxs.length },
+        }],
+        riskScore: 0,
+        riskLevel: 'LOW',
+        threats: [],
+        detectedIntents: [],
+        explainability: {
+          classificationReason: 'Self-transfers only - always safe',
+          behavioralTriggers: [],
+          userIntentDetected: ['Wallet reorganization'],
+          protocolInteractionDetected: [],
+          sweeperRuledOutReasons: ['Self-transfers cannot be drainer activity'],
+          failedSweeperCriteria: ['Sender === Receiver'],
+          passedSweeperCriteria: [],
+        },
+      },
+      excludedFromFlagging: safeTxs.map(tx => tx.to?.toLowerCase()).filter(Boolean) as string[],
+      isDEXOnlyActivity: false,
+    };
+  }
+  
+  // ============================================
+  // STEP 0b: BASE CHAIN - PROTOCOL INTERACTION CHECK
+  // ============================================
+  // RULE 1: Whitelisted protocol interactions (Uniswap, ENS.base, bridges) = SAFE
+  if (chain === 'base') {
+    const protocolChecks = safeTxs.map(tx => checkBaseProtocolInteraction(tx.to, tx.methodId));
+    const allLegitimate = protocolChecks.every(p => p.isLegitimateProtocol);
+    
+    if (allLegitimate && safeTxs.length > 0) {
+      const protocolNames = protocolChecks
+        .filter(p => p.protocolName)
+        .map(p => p.protocolName!)
+        .filter((v, i, a) => a.indexOf(v) === i); // unique
+      
+      return {
+        threats: [],
+        behaviorAnalysis: {
+          classification: 'NORMAL_USER',
+          walletRole: 'UNKNOWN',
+          confidence: 95,
+          isDefinitelyMalicious: false,
+          isProbablyMalicious: false,
+          showCriticalAlert: false,
+          explanation: `Legitimate protocol activity detected (Base chain): ${protocolNames.join(', ')}`,
+        evidence: [{
+          type: 'ROUTER_INTERACTION_DETECTED',
+          description: `Verified protocol interactions: ${protocolNames.join(', ')}`,
+          weight: -50,
+          data: { chain, protocols: protocolNames },
+        }],
+        riskScore: 0,
+        riskLevel: 'LOW',
+        threats: [],
+        detectedIntents: protocolChecks
+          .filter(p => p.protocolType)
+          .map(p => ({
+            type: p.protocolType === 'DEX' ? 'DEX_SWAP' as const : 
+                  p.protocolType === 'BRIDGE' ? 'BRIDGE_DEPOSIT' as const : 
+                  'ROUTER_INTERACTION' as const,
+            confidence: 0.95,
+            description: p.explanation,
+          })),
+          explainability: {
+            classificationReason: `Legitimate ${chain} protocol activity`,
+            behavioralTriggers: [],
+            userIntentDetected: protocolNames.map(n => `Interaction with ${n}`),
+            protocolInteractionDetected: protocolNames,
+            sweeperRuledOutReasons: ['All interactions with verified protocols'],
+            failedSweeperCriteria: ['Verified protocol interaction'],
+            passedSweeperCriteria: [],
+          },
+        },
+        excludedFromFlagging: safeTxs.map(tx => tx.to?.toLowerCase()).filter(Boolean) as string[],
+        isDEXOnlyActivity: protocolChecks.every(p => p.protocolType === 'DEX'),
+      };
+    }
+    
+    // Check for exchange transfers - these REDUCE risk
+    const exchangeTransfers = safeTxs.filter(tx => {
+      const exchangeCheck = checkExchangeWallet(tx.to);
+      return exchangeCheck.isExchange;
+    });
+    
+    if (exchangeTransfers.length === safeTxs.length && safeTxs.length > 0) {
+      return {
+        threats: [],
+        behaviorAnalysis: {
+          classification: 'NORMAL_USER',
+          walletRole: 'UNKNOWN',
+          confidence: 95,
+          isDefinitelyMalicious: false,
+          isProbablyMalicious: false,
+          showCriticalAlert: false,
+          explanation: 'All transfers are to verified exchange wallets. Exchanges cannot be sweepers.',
+        evidence: [{
+          type: 'EXCHANGE_DEPOSIT_DETECTED',
+          description: 'Transfers to verified exchange wallets',
+          weight: -50,
+          data: { chain, exchangeTransferCount: exchangeTransfers.length },
+        }],
+          riskScore: 0,
+          riskLevel: 'LOW',
+          threats: [],
+          detectedIntents: [{
+            type: 'EXCHANGE_DEPOSIT',
+            confidence: 0.95,
+            description: 'CEX deposit activity',
+          }],
+          explainability: {
+            classificationReason: 'Exchange deposits only - always legitimate',
+            behavioralTriggers: [],
+            userIntentDetected: ['Exchange deposit'],
+            protocolInteractionDetected: [],
+            sweeperRuledOutReasons: ['Exchanges cannot be sweepers by definition'],
+            failedSweeperCriteria: ['Destination is verified exchange'],
+            passedSweeperCriteria: [],
+          },
+        },
+        excludedFromFlagging: safeTxs.map(tx => tx.to?.toLowerCase()).filter(Boolean) as string[],
+        isDEXOnlyActivity: false,
+      };
+    }
+  }
+  
+  // ============================================
+  // STEP 0c: CHECK FOR DEX-ONLY ACTIVITY (All chains)
+  // ============================================
+  // RULE: DEX interaction alone ≠ compromise signal
+  // If the ONLY indicators are Uniswap swap, liquidity add/remove, or token approval
+  // to verified router → force SAFE status with risk score 0-1
+  const dexActivityCheck = isNormalDEXActivityOnly(
+    safeTxs.map(tx => ({ to: tx.to, methodId: tx.methodId, chain }))
+  );
+  
+  if (dexActivityCheck.isNormalDEXOnly && dexActivityCheck.forceSafeStatus) {
+    return {
+      threats: [],
+      behaviorAnalysis: {
+        classification: 'NORMAL_USER',
+        walletRole: 'UNKNOWN',
+        confidence: 95,
+        isDefinitelyMalicious: false,
+        isProbablyMalicious: false,
+        showCriticalAlert: false,
+        explanation: dexActivityCheck.explanation,
+        evidence: [{
+          type: 'DEX_SWAP_DETECTED',
+          description: dexActivityCheck.explanation,
+          weight: -50,
+          data: { chain, transactionCount: safeTxs.length },
+        }],
+        riskScore: 0,
+        riskLevel: 'LOW',
+        threats: [],
+        detectedIntents: [{
+          type: 'DEX_SWAP',
+          confidence: 0.95,
+          description: dexActivityCheck.explanation,
+        }],
+        explainability: {
+          classificationReason: `Normal DEX activity detected (${chain} chain)`,
+          behavioralTriggers: [],
+          userIntentDetected: ['Normal DEX activity detected'],
+          protocolInteractionDetected: ['Verified DEX router interaction'],
+          sweeperRuledOutReasons: ['DEX interaction alone ≠ compromise signal'],
+          failedSweeperCriteria: ['Interacts with verified DEX protocols'],
+          passedSweeperCriteria: [],
+        },
+      },
+      excludedFromFlagging: safeTxs.map(tx => tx.to?.toLowerCase()).filter(Boolean) as string[],
+      isDEXOnlyActivity: true,
     };
   }
 
@@ -226,6 +448,7 @@ export async function detectDrainerPatterns(
   // ============================================
   const contractClassifications = new Map<string, ContractClassification>();
   const allAddresses = new Set<string>();
+  let dexRouterCount = 0;
   
   for (const tx of safeTxs) {
     if (tx.to) allAddresses.add(tx.to.toLowerCase());
@@ -233,6 +456,104 @@ export async function detectDrainerPatterns(
   }
   
   for (const addr of allAddresses) {
+    // ============================================
+    // CHECK 0: Base chain protocol protection
+    // ============================================
+    if (chain === 'base') {
+      const baseProtocol = checkBaseProtocolInteraction(addr);
+      if (baseProtocol.isLegitimateProtocol) {
+        const safeClassification: ContractClassification = {
+          type: baseProtocol.protocolType === 'ENS' ? 'ENS' : 
+                baseProtocol.protocolType === 'BRIDGE' ? 'BRIDGE' : 
+                baseProtocol.protocolType === 'EXCHANGE' ? 'VERIFIED_SERVICE' :
+                'DEFI_PROTOCOL',
+          name: baseProtocol.protocolName,
+          isVerified: true,
+          canBeFlaggedMalicious: false,
+          classificationReason: baseProtocol.explanation,
+          confidence: 'HIGH',
+          source: 'SAFE_CONTRACTS_DB',
+        };
+        contractClassifications.set(addr, safeClassification);
+        excludedFromFlagging.push(addr);
+        if (baseProtocol.protocolType === 'DEX') {
+          dexRouterCount++;
+        }
+        continue;
+      }
+      
+      // Check for exchange wallets
+      const exchangeCheck = checkExchangeWallet(addr);
+      if (exchangeCheck.isExchange) {
+        const exchangeClassification: ContractClassification = {
+          type: 'VERIFIED_SERVICE',
+          name: exchangeCheck.exchangeInfo?.name || 'Verified Exchange',
+          isVerified: true,
+          canBeFlaggedMalicious: false,
+          classificationReason: exchangeCheck.explanation,
+          confidence: 'HIGH',
+          source: 'SAFE_CONTRACTS_DB',
+        };
+        contractClassifications.set(addr, exchangeClassification);
+        excludedFromFlagging.push(addr);
+        continue;
+      }
+    }
+    
+    // Check infrastructure protection first (highest priority)
+    const infraProtection = checkInfrastructureProtection(addr, chain);
+    if (infraProtection.isProtected) {
+      // Map infrastructure type to contract classification type
+      let classType: 'DEFI_PROTOCOL' | 'MARKETPLACE' | 'BRIDGE' | 'VERIFIED_SERVICE' | 'ENS' | 'STAKING' | 'INFRASTRUCTURE' = 'VERIFIED_SERVICE';
+      if (infraProtection.type === 'DEX_ROUTER' || infraProtection.type === 'AGGREGATOR' || infraProtection.type === 'LENDING_PROTOCOL') {
+        classType = 'DEFI_PROTOCOL';
+      } else if (infraProtection.type === 'NFT_MARKETPLACE') {
+        classType = 'MARKETPLACE';
+      } else if (infraProtection.type === 'BRIDGE') {
+        classType = 'BRIDGE';
+      } else if (infraProtection.type === 'ENS_INFRASTRUCTURE') {
+        classType = 'ENS';
+      }
+      
+      // Create a classification that marks this as safe
+      const safeClassification: ContractClassification = {
+        type: classType,
+        name: infraProtection.name,
+        isVerified: true,
+        canBeFlaggedMalicious: false,
+        classificationReason: `Protected infrastructure: ${infraProtection.name}`,
+        confidence: 'HIGH',
+        source: 'SAFE_CONTRACTS_DB',
+      };
+      contractClassifications.set(addr, safeClassification);
+      excludedFromFlagging.push(addr);
+      
+      // Count DEX routers for activity analysis
+      if (infraProtection.type === 'DEX_ROUTER' || infraProtection.type === 'AGGREGATOR') {
+        dexRouterCount++;
+      }
+      continue;
+    }
+    
+    // Check if it's a verified DEX router on this chain
+    if (isVerifiedDEXRouter(addr, chain)) {
+      const dexClassification: ContractClassification = {
+        type: 'DEFI_PROTOCOL',
+        subCategory: 'DEX_ROUTER',
+        name: 'Verified DEX Router',
+        isVerified: true,
+        canBeFlaggedMalicious: false,
+        classificationReason: `Verified DEX router on ${chain}`,
+        confidence: 'HIGH',
+        source: 'SAFE_CONTRACTS_DB',
+      };
+      contractClassifications.set(addr, dexClassification);
+      excludedFromFlagging.push(addr);
+      dexRouterCount++;
+      continue;
+    }
+    
+    // Fall back to standard classification
     const classification = await classifyContract(addr, chain);
     contractClassifications.set(addr, classification);
     
@@ -241,6 +562,9 @@ export async function detectDrainerPatterns(
       excludedFromFlagging.push(addr);
     }
   }
+  
+  // If most interactions are with DEX routers, reduce risk score
+  const dexRatio = allAddresses.size > 0 ? dexRouterCount / allAddresses.size : 0;
 
   // ============================================
   // STEP 2: Run behavioral analysis
@@ -307,6 +631,7 @@ export async function detectDrainerPatterns(
     threats,
     behaviorAnalysis,
     excludedFromFlagging,
+    isDEXOnlyActivity: dexRatio > 0.8 && dexRouterCount >= 2,
   };
 }
 
@@ -541,10 +866,69 @@ export function analyzeApprovals(approvals: ApprovalData[], chain: Chain): Token
   
   return safeApprovals.map((approval) => {
     const isUnlimited = isInfiniteApproval(approval?.amount || '0');
+    const spenderAddr = approval?.spender || '';
     
-    // NEW: Check if spender is a safe contract
-    const safeContract = isSafeContract(approval?.spender || '');
-    const legitimateLabel = isLegitimateContract(approval?.spender || '');
+    // ============================================
+    // CHECK 1: Infrastructure protection (highest priority)
+    // ============================================
+    const infraProtection = checkInfrastructureProtection(spenderAddr, chain);
+    if (infraProtection.isProtected) {
+      return {
+        id: `approval-${approval.transactionHash}`,
+        token: {
+          address: approval.token,
+          symbol: approval.tokenSymbol,
+          name: approval.tokenName,
+          decimals: 18,
+          standard: 'ERC20',
+          verified: true,
+        },
+        spender: spenderAddr,
+        spenderLabel: infraProtection.name || 'Verified Protocol',
+        amount: approval.amount,
+        isUnlimited,
+        riskLevel: 'LOW', // Protected infrastructure = LOW risk even if unlimited
+        riskReason: isUnlimited 
+          ? `Unlimited approval to verified ${infraProtection.name || 'protocol'} - normal for DEX/DeFi`
+          : undefined,
+        grantedAt: new Date(approval.timestamp * 1000).toISOString(),
+        isMalicious: false,
+      };
+    }
+    
+    // ============================================
+    // CHECK 2: Verified DEX router on this chain
+    // RULE: Approval to verified DEX router is NORMAL, not risky
+    // ============================================
+    if (isVerifiedDEXRouter(spenderAddr, chain)) {
+      return {
+        id: `approval-${approval.transactionHash}`,
+        token: {
+          address: approval.token,
+          symbol: approval.tokenSymbol,
+          name: approval.tokenName,
+          decimals: 18,
+          standard: 'ERC20',
+          verified: true,
+        },
+        spender: spenderAddr,
+        spenderLabel: 'Verified DEX Router',
+        amount: approval.amount,
+        isUnlimited,
+        riskLevel: 'LOW', // DEX router approval = LOW risk
+        riskReason: isUnlimited 
+          ? `Unlimited approval to verified DEX router - normal for trading`
+          : undefined,
+        grantedAt: new Date(approval.timestamp * 1000).toISOString(),
+        isMalicious: false,
+      };
+    }
+    
+    // ============================================
+    // CHECK 3: Safe contracts database
+    // ============================================
+    const safeContract = isSafeContract(spenderAddr);
+    const legitimateLabel = isLegitimateContract(spenderAddr);
     
     // If spender is safe, it's not malicious
     if (safeContract || legitimateLabel) {
@@ -558,7 +942,7 @@ export function analyzeApprovals(approvals: ApprovalData[], chain: Chain): Token
           standard: 'ERC20',
           verified: true,
         },
-        spender: approval.spender,
+        spender: spenderAddr,
         spenderLabel: safeContract?.name || legitimateLabel || undefined,
         amount: approval.amount,
         isUnlimited,
@@ -823,6 +1207,9 @@ export function generateConfidenceBasedMessage(
 
 /**
  * Complete wallet analysis with all new protections.
+ * 
+ * RULE: DEX interaction alone ≠ compromise signal
+ * A wallet should NEVER be flagged as compromised solely for making DEX transactions.
  */
 export async function analyzeWalletComplete(
   address: string,
@@ -839,14 +1226,42 @@ export async function analyzeWalletComplete(
   excludedContracts: string[];
 }> {
   // Run threat detection with new protections
-  const { threats, behaviorAnalysis, excludedFromFlagging } = await detectDrainerPatterns(
+  const detectionResult = await detectDrainerPatterns(
     transactions,
     chain,
     address
   );
+  const { threats, behaviorAnalysis, excludedFromFlagging, isDEXOnlyActivity } = detectionResult;
   
   // Analyze approvals with safe contract awareness
   const approvalAnalysis = analyzeApprovals(approvals, chain);
+  
+  // ============================================
+  // CHECK: If DEX-only activity, force SAFE status
+  // ============================================
+  if (isDEXOnlyActivity) {
+    return {
+      threats: [],
+      approvalAnalysis,
+      behaviorAnalysis: {
+        ...behaviorAnalysis,
+        classification: 'NORMAL_USER',
+        riskScore: 0,
+        riskLevel: 'LOW',
+        explanation: `Normal DEX activity detected (${chain} chain)`,
+      },
+      securityStatus: 'SAFE',
+      riskScore: 0,
+      message: {
+        title: 'Normal DEX Activity',
+        severity: 'INFO',
+        message: `Normal DEX activity detected (${chain} chain). No compromise indicators found.`,
+        showAlert: false,
+        actionRequired: false,
+      },
+      excludedContracts: excludedFromFlagging,
+    };
+  }
   
   // Calculate risk score with behavioral factors
   const factors: RiskFactors = {
@@ -946,11 +1361,12 @@ export async function analyzeWalletWithLabeling(
   // ============================================
   // STEP 3: Run behavioral analysis on filtered transactions
   // ============================================
-  const { threats, behaviorAnalysis, excludedFromFlagging } = await detectDrainerPatterns(
+  const detectionResult = await detectDrainerPatterns(
     transactionsToAnalyze,
     chain,
     address
   );
+  const { threats, behaviorAnalysis, excludedFromFlagging, isDEXOnlyActivity } = detectionResult;
   
   // ============================================
   // STEP 4: Cross-reference with labeled suspicious transactions
@@ -1008,6 +1424,14 @@ export async function analyzeWalletWithLabeling(
   
   // Adjust security status based on labeling
   let securityStatus = determineSecurityStatus(riskScore, validatedThreats, behaviorAnalysis);
+  
+  // ============================================
+  // RULE: DEX interaction alone ≠ compromise signal
+  // ============================================
+  // If DEX-only activity, force SAFE status
+  if (isDEXOnlyActivity) {
+    securityStatus = 'SAFE';
+  }
   
   // If > 90% legitimate and no SUSPICIOUS transactions, force SAFE
   if (legitimateRatio > 0.9 && transactionSummary.suspiciousCount === 0) {

@@ -9,6 +9,14 @@
 // - These attacks may NOT leave on-chain artifacts
 // - Absence of evidence is NOT proof of safety
 // - NEVER mark Solana wallets as "Fully Safe" or "Clean"
+//
+// THREE EXPLICIT WALLET STATES:
+// - SAFE: No historical or active compromise signals
+// - PREVIOUSLY_COMPROMISED: No active drain behavior detected, but past incidents exist
+// - ACTIVELY_COMPROMISED: Ongoing automated or hostile fund movement
+//
+// DESIGN PHILOSOPHY: Prefer false negatives over false positives.
+// This tool is for protection, not fear amplification.
 
 import {
   Connection,
@@ -35,6 +43,15 @@ import {
   SecondaryTagInfo,
 } from '@/types';
 import { CHAIN_RPC_CONFIG, SOLANA_MALICIOUS_PROGRAMS } from '../detection/malicious-database';
+import {
+  analyzeSolanaSecurity,
+  SolanaSecurityResult,
+  SolanaSecurityState,
+  SolanaTransactionData,
+  isWhitelistedProgram,
+  getWhitelistCategory,
+  DEFAULT_SOLANA_DETECTION_CONFIG,
+} from '../detection/solana-security';
 
 // Known Solana program IDs
 const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
@@ -78,7 +95,25 @@ export class SolanaAnalyzer {
       this.connection.getBalance(publicKey),
     ]);
 
-    // Analyze threats
+    // ============================================
+    // NEW: Convert to SolanaTransactionData for enhanced detection
+    // ============================================
+    const solanaTransactions = this.convertToSolanaTransactionData(transactions, address);
+    
+    // Build set of known malicious addresses
+    const knownMaliciousAddresses = new Set(SOLANA_MALICIOUS_PROGRAMS);
+    
+    // ============================================
+    // NEW: Run enhanced Solana security analysis
+    // ============================================
+    const securityResult = analyzeSolanaSecurity(
+      solanaTransactions,
+      address,
+      knownMaliciousAddresses,
+      DEFAULT_SOLANA_DETECTION_CONFIG
+    );
+
+    // Analyze threats (combine old and new detection)
     const threats: DetectedThreat[] = [];
 
     // Check for malicious program interactions
@@ -89,23 +124,80 @@ export class SolanaAnalyzer {
     const delegateThreats = await this.detectDelegateAbuse(tokenAccounts, publicKey);
     threats.push(...delegateThreats);
 
-    // Check for rapid outflows
-    const outflowThreats = this.detectRapidOutflows(transactions, address);
-    threats.push(...outflowThreats);
+    // ============================================
+    // NEW: Add threats from enhanced drainer/sweeper detection
+    // ============================================
+    if (securityResult.drainerDetection?.isDrainer) {
+      threats.push({
+        id: `drainer-${Date.now()}`,
+        type: 'WALLET_DRAINER',
+        severity: securityResult.drainerDetection.isActive ? 'CRITICAL' : 'HIGH',
+        title: securityResult.drainerDetection.isActive 
+          ? 'Active Drainer Behavior Detected' 
+          : 'Historical Drainer Activity Detected',
+        description: securityResult.drainerDetection.explanation,
+        technicalDetails: `Confidence: ${securityResult.drainerDetection.confidence}%, ` +
+          `Signals: ${securityResult.drainerDetection.signals.map(s => s.type).join(', ')}`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: securityResult.drainerDetection.signals
+          .flatMap(s => s.relatedAddresses || []),
+        relatedTransactions: securityResult.drainerDetection.signals
+          .flatMap(s => s.relatedTxSignatures || []),
+        ongoingRisk: securityResult.drainerDetection.isActive,
+        // NEW: Historical vs Active classification
+        category: securityResult.drainerDetection.isActive ? 'ACTIVE_RISK' : 'HISTORICAL_EXPOSURE',
+        isHistorical: !securityResult.drainerDetection.isActive,
+        excludeFromRiskScore: !securityResult.drainerDetection.isActive,
+        displayLabel: securityResult.drainerDetection.isActive 
+          ? undefined 
+          : 'Historical – no active risk',
+      });
+    }
+    
+    if (securityResult.sweeperDetection?.isSweeper) {
+      threats.push({
+        id: `sweeper-${Date.now()}`,
+        type: 'WALLET_DRAINER',
+        severity: securityResult.sweeperDetection.isActive ? 'CRITICAL' : 'HIGH',
+        title: securityResult.sweeperDetection.isActive 
+          ? 'Active Sweeper Bot Detected' 
+          : 'Historical Sweeper Activity Detected',
+        description: securityResult.sweeperDetection.explanation,
+        technicalDetails: `Confidence: ${securityResult.sweeperDetection.confidence}%, ` +
+          `Signals: ${securityResult.sweeperDetection.signals.map(s => s.type).join(', ')}`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: securityResult.sweeperDetection.signals
+          .flatMap(s => s.relatedAddresses || []),
+        relatedTransactions: securityResult.sweeperDetection.signals
+          .flatMap(s => s.relatedTxSignatures || []),
+        ongoingRisk: securityResult.sweeperDetection.isActive,
+        // NEW: Historical vs Active classification
+        category: securityResult.sweeperDetection.isActive ? 'ACTIVE_RISK' : 'HISTORICAL_EXPOSURE',
+        isHistorical: !securityResult.sweeperDetection.isActive,
+        excludeFromRiskScore: !securityResult.sweeperDetection.isActive,
+        displayLabel: securityResult.sweeperDetection.isActive 
+          ? undefined 
+          : 'Historical – no active risk',
+      });
+    }
 
-    // Check for suspicious airdrops
-    const airdropThreats = this.detectSuspiciousAirdrops(transactions, address);
-    threats.push(...airdropThreats);
+    // Check for suspicious airdrops (only if not already flagged as drainer/sweeper)
+    if (!securityResult.drainerDetection?.isDrainer && !securityResult.sweeperDetection?.isSweeper) {
+      const airdropThreats = this.detectSuspiciousAirdrops(transactions, address);
+      threats.push(...airdropThreats);
+    }
 
     // Analyze token account delegations (similar to EVM approvals)
     const approvals = await this.analyzeTokenDelegations(tokenAccounts, publicKey);
 
-    // Calculate risk score
-    const riskScore = this.calculateRiskScore(threats, approvals);
-    const securityStatus = this.determineSecurityStatus(riskScore, threats);
+    // ============================================
+    // NEW: Use three-state security model
+    // ============================================
+    const riskScore = securityResult.riskScore;
+    const securityStatus = this.determineSecurityStatusFromSolanaResult(securityResult, threats);
 
-    // Generate chain-aware status (Solana-specific)
-    const chainAwareStatus = this.generateChainAwareStatus(securityStatus, threats);
+    // Generate chain-aware status (Solana-specific with new states)
+    const chainAwareStatus = this.generateChainAwareStatusFromSecurityResult(securityResult, threats);
     const analysisMetadata = this.getAnalysisMetadata();
 
     // Generate suspicious transactions list
@@ -114,33 +206,30 @@ export class SolanaAnalyzer {
     // Generate recommendations
     const recommendations = this.generateRecommendations(threats, approvals, securityStatus);
 
-    // Generate recovery plan
-    const recoveryPlan = securityStatus !== 'SAFE'
+    // Generate recovery plan only for ACTIVE compromise
+    const recoveryPlan = securityResult.state === 'ACTIVELY_COMPROMISED'
       ? this.generateRecoveryPlan(threats, approvals)
       : undefined;
 
-    // Build default classification for Solana
-    // Solana analysis is simpler - no directional analysis for now
+    // ============================================
+    // NEW: Enhanced classification with three-state model
+    // ============================================
     const classification: import('@/types').WalletClassification = {
-      role: threats.length === 0 ? 'UNKNOWN' : 'VICTIM',
-      confidence: 'MEDIUM',
-      evidence: threats.length === 0 
-        ? [{ type: 'NORMAL_ACTIVITY', description: 'No on-chain malicious activity detected', weight: 'HIGH' as const }]
-        : [{ type: 'OUTBOUND_TO_DRAINER', description: 'Potential threat detected', weight: 'MEDIUM' as const }],
-      isMalicious: false,
+      role: this.determineWalletRoleFromSecurityResult(securityResult),
+      confidence: securityResult.confidence >= 80 ? 'HIGH' : 
+                  securityResult.confidence >= 50 ? 'MEDIUM' : 'LOW',
+      evidence: this.buildClassificationEvidence(securityResult, threats),
+      isMalicious: false, // User wallet is never "malicious" - it's a victim
       isInfrastructure: false,
       isServiceFeeReceiver: false,
     };
     
-    // Updated classification reason for Solana
-    const classificationReason = threats.length === 0
-      ? 'No on-chain malicious activity detected. Note: Solana compromises may occur off-chain and leave no trace.'
-      : 'Potential security threats detected. Review the identified risks.';
+    // Generate classification reason with explicit historical/active distinction
+    const classificationReason = this.generateClassificationReason(securityResult);
     
     const riskLevel: import('@/types').RiskLevel = 
-      riskScore >= 75 ? 'CRITICAL' :
-      riskScore >= 50 ? 'HIGH' :
-      riskScore >= 25 ? 'MEDIUM' : 'LOW';
+      securityResult.state === 'ACTIVELY_COMPROMISED' ? 'CRITICAL' :
+      securityResult.state === 'PREVIOUSLY_COMPROMISED' ? 'MEDIUM' : 'LOW';
 
     return {
       address,
@@ -151,7 +240,7 @@ export class SolanaAnalyzer {
       securityStatus,
       riskScore,
       
-      // Chain-aware status (NEW - Solana specific)
+      // Chain-aware status (Solana specific with new three-state model)
       chainAwareStatus,
       analysisMetadata,
       chainDisclaimer: SOLANA_SECURITY_DISCLAIMER,
@@ -162,7 +251,7 @@ export class SolanaAnalyzer {
       classificationReason,
       
       // Detailed analysis
-      summary: this.generateSummary(securityStatus, threats, approvals),
+      summary: this.generateSummaryFromSecurityResult(securityResult, threats, approvals),
       detectedThreats: threats,
       approvals,
       suspiciousTransactions,
@@ -170,6 +259,253 @@ export class SolanaAnalyzer {
       recoveryPlan,
       educationalContent: this.generateEducationalContent(threats),
     };
+  }
+
+  /**
+   * Convert ParsedTransactionWithMeta to SolanaTransactionData for enhanced detection.
+   */
+  private convertToSolanaTransactionData(
+    transactions: ParsedTransactionWithMeta[],
+    walletAddress: string
+  ): SolanaTransactionData[] {
+    const normalizedWallet = walletAddress.toLowerCase();
+    
+    return transactions.map(tx => {
+      const signature = tx.transaction.signatures[0];
+      const timestamp = tx.blockTime || undefined;
+      const slot = tx.slot;
+      
+      // Get account keys
+      const accountKeys = tx.transaction.message.accountKeys || [];
+      const fromAddress = accountKeys[0]?.pubkey?.toString?.();
+      
+      // Determine if inbound/outbound based on balance changes
+      const preBalances = tx.meta?.preBalances || [];
+      const postBalances = tx.meta?.postBalances || [];
+      const isOutbound = preBalances[0] > postBalances[0];
+      const isInbound = preBalances[0] < postBalances[0];
+      
+      // Get program IDs
+      const programIds = tx.transaction.message.instructions
+        .map(i => i.programId.toString())
+        .filter(Boolean);
+      
+      // Check for memo
+      const hasMemo = programIds.some(p => 
+        p === 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr' ||
+        p === 'Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo'
+      );
+      
+      // Calculate lamports transferred
+      const lamports = Math.abs((postBalances[0] || 0) - (preBalances[0] || 0));
+      
+      // Detect transfer types
+      const isSOLTransfer = lamports > 0 && !programIds.includes('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+      const isSPLTransfer = programIds.includes('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+      const isNFTTransfer = programIds.some(p => 
+        p === 'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s' ||
+        p === 'BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY'
+      );
+      
+      // Get compute units if available
+      const computeUnits = tx.meta?.computeUnitsConsumed;
+      
+      // Determine destination (simplified - second account key if outbound)
+      const toAddress = isOutbound && accountKeys.length > 1 
+        ? accountKeys[1]?.pubkey?.toString?.() 
+        : undefined;
+      
+      return {
+        signature,
+        timestamp,
+        slot,
+        fromAddress,
+        toAddress,
+        isInbound,
+        isOutbound,
+        lamports,
+        programIds,
+        hasMemo,
+        computeUnits,
+        isNFTTransfer,
+        isSPLTransfer,
+        isSOLTransfer,
+      };
+    });
+  }
+
+  /**
+   * Determine security status from Solana security result.
+   */
+  private determineSecurityStatusFromSolanaResult(
+    result: SolanaSecurityResult,
+    threats: DetectedThreat[]
+  ): SecurityStatus {
+    switch (result.state) {
+      case 'ACTIVELY_COMPROMISED':
+        return 'COMPROMISED';
+      case 'PREVIOUSLY_COMPROMISED':
+        return 'PREVIOUSLY_COMPROMISED';
+      case 'SAFE':
+      default:
+        // Even if "SAFE", check for other threats
+        if (threats.some(t => t.severity === 'CRITICAL' && t.ongoingRisk)) {
+          return 'COMPROMISED';
+        }
+        if (threats.length > 0) {
+          return 'AT_RISK';
+        }
+        return 'SAFE';
+    }
+  }
+
+  /**
+   * Generate chain-aware status from security result.
+   */
+  private generateChainAwareStatusFromSecurityResult(
+    result: SolanaSecurityResult,
+    threats: DetectedThreat[]
+  ): ChainAwareSecurityLabel {
+    switch (result.state) {
+      case 'ACTIVELY_COMPROMISED':
+        return {
+          status: 'COMPROMISED',
+          displayLabel: 'Active Compromise Detected',
+          shortLabel: 'ACTIVE THREAT',
+          description: result.explanation,
+          isDefinitiveSafe: false,
+        };
+      
+      case 'PREVIOUSLY_COMPROMISED':
+        return {
+          status: 'PREVIOUSLY_COMPROMISED',
+          displayLabel: 'Previously Compromised – No Active Risk',
+          shortLabel: 'HISTORICAL',
+          description: result.explanation,
+          disclaimer: 'Historical compromise detected but no current active threat. ' +
+                      'If you suspect ongoing issues, treat the wallet as unsafe.',
+          isDefinitiveSafe: false,
+        };
+      
+      case 'SAFE':
+      default:
+        return {
+          status: 'NO_ONCHAIN_RISK_DETECTED',
+          displayLabel: 'No On-Chain Risk Detected',
+          shortLabel: 'NO RISK DETECTED',
+          description: 'No detectable on-chain security threats found. ' +
+                       'This does NOT guarantee the wallet is safe from all threats.',
+          disclaimer: SOLANA_SECURITY_DISCLAIMER,
+          isDefinitiveSafe: false, // NEVER true for Solana
+          secondaryTags: [SECONDARY_TAGS.HISTORICAL_OFFCHAIN_COMPROMISE_POSSIBLE],
+        };
+    }
+  }
+
+  /**
+   * Determine wallet role from security result.
+   */
+  private determineWalletRoleFromSecurityResult(result: SolanaSecurityResult): import('@/types').WalletRole {
+    if (result.state === 'ACTIVELY_COMPROMISED') {
+      return 'VICTIM';
+    }
+    if (result.state === 'PREVIOUSLY_COMPROMISED') {
+      return 'VICTIM';
+    }
+    return 'UNKNOWN';
+  }
+
+  /**
+   * Build classification evidence from security result.
+   */
+  private buildClassificationEvidence(
+    result: SolanaSecurityResult,
+    threats: DetectedThreat[]
+  ): import('@/types').ClassificationEvidence[] {
+    const evidence: import('@/types').ClassificationEvidence[] = [];
+    
+    if (result.state === 'SAFE') {
+      evidence.push({
+        type: 'NORMAL_ACTIVITY',
+        description: 'No compromise signals detected',
+        weight: 'HIGH',
+      });
+      
+      for (const safe of result.reasoning.safeSignals) {
+        evidence.push({
+          type: 'NORMAL_ACTIVITY',
+          description: safe,
+          weight: 'MEDIUM',
+        });
+      }
+    } else {
+      for (const signal of result.reasoning.detectedSignals) {
+        evidence.push({
+          type: signal.type.includes('DRAINER') || signal.type.includes('SWEEPER') 
+            ? 'OUTBOUND_TO_DRAINER' 
+            : 'UNKNOWN',
+          description: signal.description,
+          weight: signal.confidence === 'HIGH' ? 'HIGH' : 
+                  signal.confidence === 'MEDIUM' ? 'MEDIUM' : 'LOW',
+        });
+      }
+    }
+    
+    return evidence;
+  }
+
+  /**
+   * Generate classification reason from security result.
+   */
+  private generateClassificationReason(result: SolanaSecurityResult): string {
+    switch (result.state) {
+      case 'ACTIVELY_COMPROMISED':
+        return `ACTIVE compromise detected. ${result.signalCount} high-confidence signal(s) identified. ` +
+               result.reasoning.stateReason;
+      
+      case 'PREVIOUSLY_COMPROMISED':
+        return `Historical compromise detected but NO ACTIVE RISK. ` +
+               `${result.daysSinceLastIncident !== undefined 
+                 ? `Last suspicious activity was ${result.daysSinceLastIncident} day(s) ago. ` 
+                 : ''}` +
+               'No current automated or hostile fund movement observed.';
+      
+      case 'SAFE':
+      default:
+        return 'No compromise signals detected on this Solana wallet. ' +
+               'Note: Many Solana attacks occur off-chain and may not leave detectable traces. ' +
+               'If you suspect compromise, treat the wallet as unsafe.';
+    }
+  }
+
+  /**
+   * Generate summary from security result.
+   */
+  private generateSummaryFromSecurityResult(
+    result: SolanaSecurityResult,
+    threats: DetectedThreat[],
+    approvals: TokenApproval[]
+  ): string {
+    switch (result.state) {
+      case 'ACTIVELY_COMPROMISED':
+        return `URGENT: Active compromise detected on your Solana wallet. ` +
+               `${result.signalCount} independent signal(s) identified. ` +
+               'Immediate action required: Transfer remaining assets to a fresh wallet.';
+      
+      case 'PREVIOUSLY_COMPROMISED':
+        return `Your Solana wallet shows signs of PREVIOUS compromise, but NO ACTIVE RISK. ` +
+               `${result.daysSinceLastIncident !== undefined 
+                 ? `Last suspicious activity was ${result.daysSinceLastIncident} day(s) ago. ` 
+                 : ''}` +
+               'No current automated or hostile fund movement observed. ' +
+               'Continue monitoring but no immediate action required.';
+      
+      case 'SAFE':
+      default:
+        return 'No detectable on-chain security threats found on your Solana wallet. ' +
+               'Note: Many Solana attacks occur off-chain and may not leave on-chain traces. ' +
+               'Continue practicing safe wallet hygiene.';
+    }
   }
 
   private async fetchTransactionHistory(publicKey: PublicKey): Promise<ParsedTransactionWithMeta[]> {

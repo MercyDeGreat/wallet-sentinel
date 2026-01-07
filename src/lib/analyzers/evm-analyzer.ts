@@ -79,6 +79,18 @@ import {
   canNeverBeDrainer,
   type InfrastructureCheckResult,
 } from '../detection/infrastructure-protection';
+import {
+  checkBaseProtocolInteraction,
+  checkSelfTransfer,
+  checkExchangeWallet,
+  ENS_BASE_CONTRACTS,
+  BASE_BRIDGE_CONTRACTS,
+} from '../detection/base-chain-protection';
+import {
+  isNFTMintTransaction,
+  isStandardMintMethod,
+  isPaidMintTransaction,
+} from '../detection/safe-contracts';
 
 // ============================================
 // INTERFACES
@@ -470,12 +482,45 @@ export class EVMAnalyzer {
     }
 
     // Helper: Check if address is a safe/legitimate destination
-    const isSafeDestination = (address: string): boolean => {
+    const isSafeDestination = (address: string, methodId?: string): boolean => {
       const normalized = address.toLowerCase();
       // CRITICAL: Check infrastructure protection FIRST
       // OpenSea, Uniswap, etc. can NEVER be flagged as drainer destinations
       const infraCheck = checkInfrastructureProtection(normalized, this.chain);
       if (infraCheck.isProtected) return true;
+      
+      // ============================================
+      // BASE CHAIN SPECIFIC PROTECTION
+      // ============================================
+      if (this.chain === 'base') {
+        // Check Base-specific protocols (ENS.base, bridges, NFT platforms, etc.)
+        const baseProtocol = checkBaseProtocolInteraction(normalized, methodId);
+        if (baseProtocol.isLegitimateProtocol) {
+          console.log(`[isSafeDestination] ${normalized.slice(0, 10)}... is Base protocol: ${baseProtocol.protocolName}`);
+          return true;
+        }
+        
+        // Check if it's an exchange wallet
+        const exchangeCheck = checkExchangeWallet(normalized);
+        if (exchangeCheck.isExchange) return true;
+      }
+      
+      // ============================================
+      // NFT MINT DETECTION - ALWAYS LEGITIMATE
+      // ============================================
+      // RULE: If the method is a mint, user is PAYING for an NFT = SAFE
+      if (methodId && isStandardMintMethod(methodId)) {
+        console.log(`[isSafeDestination] ${normalized.slice(0, 10)}... is mint transaction (method: ${methodId.slice(0, 10)})`);
+        return true;
+      }
+      if (isNFTMintTransaction(normalized, methodId, undefined, this.chain)) return true;
+      if (isNFTMintContract(normalized)) return true;
+      
+      // CRITICAL: If user is PAYING (sending value), this is a purchase, not drain
+      // Don't need methodId check for this - any paid transaction is likely legitimate
+      // Drainers receive value, they don't require payment
+      if (isPaidMintTransaction(methodId)) return true;
+      
       // Check comprehensive safe contracts
       if (isSafeContract(normalized)) return true;
       // Check exchange hot wallets
@@ -491,7 +536,7 @@ export class EVMAnalyzer {
     };
 
     // Collect all outbound transfers
-    const outboundTransfers: { to: string; hash: string; timestamp: number; type: string; value: string }[] = [];
+    const outboundTransfers: { to: string; hash: string; timestamp: number; type: string; value: string; methodId?: string }[] = [];
 
     // Native ETH transfers
     for (const tx of transactions) {
@@ -499,12 +544,24 @@ export class EVMAnalyzer {
       if (tx.from.toLowerCase() === userAddress) {
         const value = BigInt(tx.value || '0');
         if (value > BigInt(0)) {
+          // ============================================
+          // SKIP SELF-TRANSFERS - ALWAYS LEGITIMATE
+          // ============================================
+          const selfCheck = checkSelfTransfer(tx.from, tx.to);
+          if (selfCheck.isSelfTransfer) continue;
+          
+          // ============================================
+          // SKIP NFT MINTS - ALWAYS LEGITIMATE
+          // ============================================
+          if (tx.methodId && isStandardMintMethod(tx.methodId)) continue;
+          
           outboundTransfers.push({
             to: tx.to.toLowerCase(),
             hash: tx.hash,
             timestamp: tx.timestamp,
             type: 'native',
             value: tx.value,
+            methodId: tx.methodId,
           });
         }
       }
@@ -530,7 +587,7 @@ export class EVMAnalyzer {
     // FIRST: Calculate ratio of safe vs unknown destinations
     // If most outbound goes to safe destinations, this is NORMAL
     // ============================================
-    const safeOutbound = outboundTransfers.filter(t => isSafeDestination(t.to));
+    const safeOutbound = outboundTransfers.filter(t => isSafeDestination(t.to, t.methodId));
     const safeRatio = outboundTransfers.length > 0 ? safeOutbound.length / outboundTransfers.length : 1;
     
     // If > 60% of outbound goes to safe destinations, NOT a drain
@@ -710,6 +767,19 @@ export class EVMAnalyzer {
       const infraCheck = checkInfrastructureProtection(normalized, this.chain);
       if (infraCheck.isProtected) return true;
       
+      // ============================================
+      // BASE CHAIN SPECIFIC PROTECTION
+      // ============================================
+      if (this.chain === 'base') {
+        // Check Base-specific protocols (ENS.base, bridges, etc.)
+        const baseProtocol = checkBaseProtocolInteraction(normalized, methodId);
+        if (baseProtocol.isLegitimateProtocol) return true;
+        
+        // Check if it's an exchange wallet
+        const exchangeCheck = checkExchangeWallet(normalized);
+        if (exchangeCheck.isExchange) return true;
+      }
+      
       // Check safe contracts (comprehensive allowlist)
       if (isSafeContract(normalized)) return true;
       if (isDeFiProtocol(normalized)) return true;
@@ -720,6 +790,15 @@ export class EVMAnalyzer {
       if (EXCHANGE_HOT_WALLETS.has(normalized)) return true;
       if (isLegitimateContract(normalized)) return true;
       
+      // ============================================
+      // NFT MINT DETECTION - ALWAYS LEGITIMATE
+      // ============================================
+      // NFT mints are NEVER malicious - they're user-initiated purchases
+      if (isNFTMintTransaction(normalized, methodId)) return true;
+      
+      // Check if method is a standard mint function
+      if (methodId && isStandardMintMethod(methodId)) return true;
+      
       // Check if method indicates user action
       if (methodId) {
         const userActionMethods = new Set([
@@ -729,11 +808,25 @@ export class EVMAnalyzer {
           '0xe8eda9df', // Aave deposit
           '0x1249c58b', '0xa0712d68', '0x40c10f19', // mint
           '0xfb0f3ee1', '0x87201b41', // Seaport
+          // Additional mint patterns
+          '0x2db11544', // publicMint(uint256)
+          '0x84bb1e42', // mintPublic(uint256)
+          '0x14f710fe', // freeMint()
+          '0x379607f5', // claim(uint256)
+          '0x4e71d92d', // claim()
         ]);
         if (userActionMethods.has(methodId.toLowerCase().slice(0, 10))) return true;
       }
       
       return false;
+    };
+    
+    // ============================================
+    // HELPER: Check if transaction is a self-transfer
+    // ============================================
+    const isSelfTransfer = (from: string, to: string): boolean => {
+      const selfCheck = checkSelfTransfer(from, to);
+      return selfCheck.isSelfTransfer;
     };
 
     // Build timeline of in/out transactions
@@ -743,10 +836,19 @@ export class EVMAnalyzer {
       if (!tx?.from || !tx?.to || !tx?.hash) continue;
       const value = BigInt(tx.value || '0');
       if (value === BigInt(0)) continue;
+      
+      // ============================================
+      // SKIP SELF-TRANSFERS - ALWAYS LEGITIMATE
+      // ============================================
+      // Self-transfers are wallet reorganization, not sweeper behavior
+      if (isSelfTransfer(tx.from, tx.to)) continue;
 
       if (tx.to.toLowerCase() === userAddress) {
         timeline.push({ type: 'in', to: tx.to, from: tx.from.toLowerCase(), value, timestamp: tx.timestamp, hash: tx.hash });
       } else if (tx.from.toLowerCase() === userAddress) {
+        // Skip if destination is an NFT mint - mints are NEVER sweeper activity
+        if (tx.methodId && isStandardMintMethod(tx.methodId)) continue;
+        
         timeline.push({ type: 'out', to: tx.to.toLowerCase(), from: tx.from, value, timestamp: tx.timestamp, hash: tx.hash, methodId: tx.methodId });
       }
     }
@@ -1157,6 +1259,55 @@ export class EVMAnalyzer {
       console.log(`[detectMaliciousInteractions] ${userAddress}: Protected infrastructure (${infrastructureCheck.name}) - skipping malicious detection`);
       return threats; // Empty - infrastructure cannot be malicious
     }
+    
+    // ============================================
+    // STEP 0.5: BASE CHAIN PROTOCOL INTERACTION CHECK
+    // ============================================
+    // If on Base chain, check if ALL transactions are to verified protocols.
+    // If so, this is normal activity and should not trigger any threats.
+    if (this.chain === 'base') {
+      let allProtocolInteractions = true;
+      let protocolNames: string[] = [];
+      
+      for (const tx of transactions) {
+        if (!tx?.to) continue;
+        
+        // Check for Base protocol interactions (DEX, ENS.base, bridges, mints)
+        const protocolCheck = checkBaseProtocolInteraction(tx.to, tx.methodId);
+        if (protocolCheck.isLegitimateProtocol) {
+          if (protocolCheck.protocolName) protocolNames.push(protocolCheck.protocolName);
+          continue;
+        }
+        
+        // Check if this is a mint transaction (by method signature)
+        if (tx.methodId && isStandardMintMethod(tx.methodId)) {
+          protocolNames.push('NFT Mint');
+          continue;
+        }
+        
+        // Check for self-transfers
+        const selfCheck = checkSelfTransfer(tx.from, tx.to);
+        if (selfCheck.isSelfTransfer) {
+          protocolNames.push('Self-transfer');
+          continue;
+        }
+        
+        // Check for exchange transfers
+        const exchangeCheck = checkExchangeWallet(tx.to);
+        if (exchangeCheck.isExchange) {
+          protocolNames.push(exchangeCheck.exchangeInfo?.name || 'Exchange');
+          continue;
+        }
+        
+        // This transaction is NOT a known safe protocol
+        allProtocolInteractions = false;
+      }
+      
+      if (allProtocolInteractions && transactions.length > 0) {
+        console.log(`[detectMaliciousInteractions] ${userAddress}: All Base chain transactions are verified protocol interactions (${[...new Set(protocolNames)].join(', ')}) - skipping threat detection`);
+        return threats; // Empty - all safe protocol interactions
+      }
+    }
 
     // Perform directional analysis to understand wallet's role
     const directionalAnalysis = this.analyzeTransactionDirection(transactions, tokenTransfers, userAddress);
@@ -1184,6 +1335,52 @@ export class EVMAnalyzer {
       
       // Skip if destination is legitimate infrastructure (secondary check)
       if (isLegitimateContract(destination)) continue;
+      
+      // RULE 1 (Base Chain): Skip if destination is a verified Base protocol
+      if (this.chain === 'base') {
+        const baseProtocolCheck = checkBaseProtocolInteraction(destination, tx.methodId);
+        if (baseProtocolCheck.isLegitimateProtocol) {
+          console.log(`[detectMaliciousInteractions] Skipping ${destination}: Base protocol (${baseProtocolCheck.protocolName})`);
+          continue;
+        }
+        
+        // Skip if this is a mint transaction (by method signature)
+        if (tx.methodId && isStandardMintMethod(tx.methodId)) {
+          console.log(`[detectMaliciousInteractions] Skipping ${destination}: Mint transaction`);
+          continue;
+        }
+        
+        // CRITICAL: Skip if user is PAYING (sending value) - this is a purchase
+        // Drainers don't require payment from victims - they TAKE value
+        if (isPaidMintTransaction(tx.methodId, tx.value)) {
+          console.log(`[detectMaliciousInteractions] Skipping ${destination}: Paid transaction (${tx.value}) - likely purchase`);
+          continue;
+        }
+        
+        // RULE 3: Skip if destination is an exchange
+        const exchangeCheck = checkExchangeWallet(destination);
+        if (exchangeCheck.isExchange) {
+          console.log(`[detectMaliciousInteractions] Skipping ${destination}: Exchange (${exchangeCheck.exchangeInfo?.name})`);
+          continue;
+        }
+      }
+      
+      // RULE 2: Skip self-transfers
+      const selfCheck = checkSelfTransfer(tx.from, tx.to);
+      if (selfCheck.isSelfTransfer) {
+        console.log(`[detectMaliciousInteractions] Skipping ${destination}: Self-transfer`);
+        continue;
+      }
+      
+      // ============================================
+      // PAID TRANSACTION CHECK (applies to ALL chains)
+      // ============================================
+      // If user is sending value (paying), this is a purchase behavior.
+      // This is fundamentally NOT drain behavior.
+      if (isPaidMintTransaction(tx.methodId, tx.value)) {
+        console.log(`[detectMaliciousInteractions] Skipping ${destination}: Paid transaction (${tx.value}) - purchase behavior`);
+        continue;
+      }
       
       const malicious = isMaliciousAddress(destination, this.chain);
       
@@ -1493,10 +1690,90 @@ export class EVMAnalyzer {
       // Check addresses user SENT to (potential scams they interacted with)
       if (tx.from.toLowerCase() === userAddress && !checkedAddresses.has(tx.to.toLowerCase())) {
         // Skip known legitimate
-        if (!isLegitimateContract(tx.to)) {
-          addressesToCheck.push(tx.to.toLowerCase());
-          checkedAddresses.add(tx.to.toLowerCase());
+        if (isLegitimateContract(tx.to)) continue;
+        
+        // ============================================
+        // NFT MINT FALSE POSITIVE PREVENTION
+        // ============================================
+        // CRITICAL: NFT mints should NEVER be flagged as malicious
+        // They are normal user behavior (paying ETH to receive NFT)
+        
+        // Check if this is a known NFT mint contract
+        if (isNFTMintContract(tx.to)) {
+          console.log(`[ThreatIntel] Skipping ${tx.to} - known NFT mint contract`);
+          continue;
         }
+        
+        // Check if this is an NFT marketplace
+        if (isNFTMarketplace(tx.to)) {
+          console.log(`[ThreatIntel] Skipping ${tx.to} - NFT marketplace`);
+          continue;
+        }
+        
+        // Check if this transaction is an NFT mint by method signature
+        // Even unknown contracts can be legitimate NFT mints
+        if (isNFTMintTransaction(tx.to, tx.methodId, BigInt(tx.value || '0'))) {
+          console.log(`[ThreatIntel] Skipping ${tx.to} - detected as NFT mint transaction`);
+          continue;
+        }
+        
+        // Check if it's a standard mint method
+        if (isStandardMintMethod(tx.methodId)) {
+          console.log(`[ThreatIntel] Skipping ${tx.to} - standard mint method detected`);
+          continue;
+        }
+        
+        // ============================================
+        // PAID MINT DETECTION - ALWAYS SAFE
+        // ============================================
+        // If user is PAYING (sending value), they're BUYING something.
+        // This is fundamentally NOT drain behavior - drainers TAKE, not receive.
+        if (isPaidMintTransaction(tx.methodId, tx.value)) {
+          console.log(`[ThreatIntel] Skipping ${tx.to} - paid transaction (value: ${tx.value}) - likely NFT purchase`);
+          continue;
+        }
+        
+        // ============================================
+        // BASE CHAIN SPECIFIC PROTECTION
+        // ============================================
+        // On Base chain, check if this is a verified protocol interaction
+        if (this.chain === 'base') {
+          const baseProtocolCheck = checkBaseProtocolInteraction(tx.to.toLowerCase(), tx.methodId);
+          if (baseProtocolCheck.isLegitimateProtocol) {
+            console.log(`[ThreatIntel] Skipping ${tx.to} - Base protocol: ${baseProtocolCheck.protocolName}`);
+            continue;
+          }
+          
+          // Check for self-transfer
+          const selfCheck = checkSelfTransfer(tx.from, tx.to);
+          if (selfCheck.isSelfTransfer) {
+            console.log(`[ThreatIntel] Skipping ${tx.to} - self-transfer`);
+            continue;
+          }
+          
+          // Check for exchange deposit
+          const exchangeCheck = checkExchangeWallet(tx.to);
+          if (exchangeCheck.isExchange) {
+            console.log(`[ThreatIntel] Skipping ${tx.to} - exchange: ${exchangeCheck.exchangeInfo?.name}`);
+            continue;
+          }
+        }
+        
+        // Check infrastructure protection (DEX, bridge, etc.)
+        const infraCheck = checkInfrastructureProtection(tx.to.toLowerCase(), this.chain);
+        if (infraCheck.isProtected) {
+          console.log(`[ThreatIntel] Skipping ${tx.to} - protected infrastructure (${infraCheck.name})`);
+          continue;
+        }
+        
+        // Check if it's a safe contract from our database
+        if (isSafeContract(tx.to.toLowerCase())) {
+          console.log(`[ThreatIntel] Skipping ${tx.to} - safe contract`);
+          continue;
+        }
+        
+        addressesToCheck.push(tx.to.toLowerCase());
+        checkedAddresses.add(tx.to.toLowerCase());
       }
     }
     
@@ -1515,18 +1792,61 @@ export class EVMAnalyzer {
         
         // GoPlus flagged as malicious
         if (goPlusResult?.isMalicious) {
-          threats.push({
-            id: `external-intel-goplus-${address.slice(0, 10)}`,
-            type: 'WALLET_DRAINER',
-            severity: goPlusResult.riskLevel,
-            title: `🔍 External Threat Intel: ${goPlusResult.details.split(',')[0]}`,
-            description: `GoPlus Labs flagged this address as malicious: ${goPlusResult.details}. You interacted with this address.`,
-            technicalDetails: `Address: ${address}\nSource: ${goPlusResult.source}\nConfidence: ${goPlusResult.confidence}%`,
-            detectedAt: new Date().toISOString(),
-            relatedAddresses: [address],
-            relatedTransactions: transactions.filter(tx => tx.to?.toLowerCase() === address).slice(0, 5).map(tx => tx.hash),
-            ongoingRisk: true,
-          });
+          // ============================================
+          // FALSE POSITIVE PREVENTION FOR GOPLUS RESULTS
+          // ============================================
+          // GoPlus sometimes flags legitimate contracts incorrectly.
+          // Double-check against our known-safe lists before flagging.
+          
+          // Check if all transactions to this address are NFT mints
+          const txsToAddress = transactions.filter(tx => tx.to?.toLowerCase() === address);
+          const allAreMints = txsToAddress.every(tx => 
+            isStandardMintMethod(tx.methodId) || 
+            isNFTMintTransaction(tx.to, tx.methodId, BigInt(tx.value || '0'))
+          );
+          
+          if (allAreMints && txsToAddress.length > 0) {
+            console.log(`[ThreatIntel] Overriding GoPlus flag for ${address} - all transactions are NFT mints`);
+            continue; // Skip - these are all legitimate NFT mint transactions
+          }
+          
+          // ============================================
+          // BASE CHAIN: Override GoPlus for verified protocols
+          // ============================================
+          if (this.chain === 'base') {
+            // Check if this is a Base protocol
+            const txWithMethod = txsToAddress.find(tx => tx.methodId);
+            const baseProtocolCheck = checkBaseProtocolInteraction(address, txWithMethod?.methodId);
+            if (baseProtocolCheck.isLegitimateProtocol) {
+              console.log(`[ThreatIntel] Overriding GoPlus flag for ${address} - Base protocol: ${baseProtocolCheck.protocolName}`);
+              continue;
+            }
+          }
+          
+          // Check if contract type suggests it's a token or NFT (not a drainer)
+          if (bytecodeAnalysis?.contractType === 'TOKEN' || 
+              bytecodeAnalysis?.contractType === 'NFT_MARKET') {
+            console.log(`[ThreatIntel] Overriding GoPlus flag for ${address} - contract type is ${bytecodeAnalysis.contractType}`);
+            continue; // Skip - this is a token or NFT marketplace contract
+          }
+          
+          // Only create threat if confidence is high and not overridden
+          if (goPlusResult.confidence >= 50) {
+            threats.push({
+              id: `external-intel-goplus-${address.slice(0, 10)}`,
+              type: 'WALLET_DRAINER',
+              severity: goPlusResult.riskLevel,
+              title: `🔍 External Threat Intel: ${goPlusResult.details.split(',')[0]}`,
+              description: `GoPlus Labs flagged this address as malicious: ${goPlusResult.details}. You interacted with this address.`,
+              technicalDetails: `Address: ${address}\nSource: ${goPlusResult.source}\nConfidence: ${goPlusResult.confidence}%`,
+              detectedAt: new Date().toISOString(),
+              relatedAddresses: [address],
+              relatedTransactions: txsToAddress.slice(0, 5).map(tx => tx.hash),
+              ongoingRisk: true,
+            });
+          } else {
+            console.log(`[ThreatIntel] Skipping low-confidence GoPlus flag for ${address} (${goPlusResult.confidence}%)`);
+          }
         }
         
         // Bytecode analysis: proxy clone of known drainer
@@ -2433,11 +2753,35 @@ export class EVMAnalyzer {
       const maliciousSpender = isMaliciousAddress(event.spender, this.chain);
       const legitimateSpender = isLegitimateContract(event.spender);
       const drainerRecipient = isDrainerRecipient(event.spender);
+      
+      // ============================================
+      // RULE 1 (Base Chain): Check if spender is a verified protocol
+      // ============================================
+      // Approvals to verified DEX routers, bridges, ENS, etc. are SAFE
+      const infraCheck = checkInfrastructureProtection(event.spender, this.chain);
+      const isVerifiedProtocol = infraCheck.isProtected;
+      
+      // On Base chain, also check Base-specific protocols
+      let isBaseProtocol = false;
+      if (this.chain === 'base') {
+        const baseProtocolCheck = checkBaseProtocolInteraction(event.spender);
+        isBaseProtocol = baseProtocolCheck.isLegitimateProtocol;
+        
+        // Check exchange wallets too
+        const exchangeCheck = checkExchangeWallet(event.spender);
+        if (exchangeCheck.isExchange) {
+          isBaseProtocol = true;
+        }
+      }
 
       let riskLevel: RiskLevel = 'LOW';
       let riskReason: string | undefined;
 
-      if (maliciousSpender || drainerRecipient) {
+      // If spender is a verified protocol, it's NOT malicious
+      if (isVerifiedProtocol || isBaseProtocol) {
+        riskLevel = 'LOW';
+        riskReason = `Approval to verified protocol (${infraCheck.name || 'verified'})`;
+      } else if (maliciousSpender || drainerRecipient) {
         riskLevel = 'CRITICAL';
         riskReason = 'Approved to known malicious address';
       } else if (isUnlimited && !legitimateSpender) {
@@ -2448,6 +2792,9 @@ export class EVMAnalyzer {
         riskReason = `Unlimited approval to ${legitimateSpender}`;
       }
 
+      // RULE 1: NEVER flag verified protocols as malicious
+      const isMaliciousApproval = !!(maliciousSpender || drainerRecipient) && !isVerifiedProtocol && !isBaseProtocol;
+      
       approvals.push({
         id: `approval-${event.transactionHash}-${event.spender}`,
         token: {
@@ -2459,13 +2806,13 @@ export class EVMAnalyzer {
           verified: false,
         },
         spender: event.spender,
-        spenderLabel: legitimateSpender || maliciousSpender?.name,
+        spenderLabel: legitimateSpender || maliciousSpender?.name || (isVerifiedProtocol ? infraCheck.name : undefined),
         amount,
         isUnlimited,
         riskLevel,
         riskReason,
         grantedAt: new Date(event.timestamp * 1000).toISOString(),
-        isMalicious: !!(maliciousSpender || drainerRecipient),
+        isMalicious: isMaliciousApproval,
       });
     }
 

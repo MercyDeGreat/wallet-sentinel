@@ -15,8 +15,9 @@
 
 import { Chain, SecurityStatus, CompromiseReasonCode, CompromiseEvidence, HistoricalIncident } from '@/types';
 import { isMaliciousAddress, isDrainerRecipient, isLegitimateContract } from './malicious-database';
-import { isSafeContract, isENSContract, isDeFiProtocol, isInfrastructureContract, isNFTMarketplace } from './safe-contracts';
+import { isSafeContract, isENSContract, isDeFiProtocol, isInfrastructureContract, isNFTMarketplace, isNFTMintContract, isNFTMintTransaction, isStandardMintMethod, isBaseNFTActivity, isPaidMintTransaction } from './safe-contracts';
 import { checkInfrastructureProtection } from './infrastructure-protection';
+import { checkBaseProtocolInteraction, checkSelfTransfer, checkExchangeWallet } from './base-chain-protection';
 
 // ============================================
 // HISTORICAL VS ACTIVE COMPROMISE DETECTION
@@ -296,7 +297,7 @@ const KNOWN_ROUTERS = new Set([
  */
 function classifyDestinationTrust(address: string): { 
   isTrusted: boolean; 
-  category: 'BRIDGE' | 'EXCHANGE' | 'ROUTER' | 'PROTOCOL' | 'INFRASTRUCTURE' | 'UNKNOWN';
+  category: 'BRIDGE' | 'EXCHANGE' | 'ROUTER' | 'PROTOCOL' | 'INFRASTRUCTURE' | 'NFT_MINT' | 'UNKNOWN';
   name?: string;
 } {
   const normalized = address.toLowerCase();
@@ -305,6 +306,27 @@ function classifyDestinationTrust(address: string): {
   const infraCheck = checkInfrastructureProtection(normalized, 'ethereum');
   if (infraCheck.isProtected) {
     return { isTrusted: true, category: 'INFRASTRUCTURE', name: infraCheck.name };
+  }
+  
+  // ============================================
+  // BASE CHAIN SPECIFIC PROTECTION
+  // ============================================
+  const baseProtocol = checkBaseProtocolInteraction(normalized);
+  if (baseProtocol.isLegitimateProtocol) {
+    return { isTrusted: true, category: 'PROTOCOL', name: baseProtocol.protocolName };
+  }
+  
+  // Check exchange wallets (CEX hot wallets)
+  const exchangeCheck = checkExchangeWallet(normalized);
+  if (exchangeCheck.isExchange) {
+    return { isTrusted: true, category: 'EXCHANGE', name: exchangeCheck.exchangeInfo?.name };
+  }
+  
+  // ============================================
+  // NFT MINT CONTRACTS - ALWAYS TRUSTED
+  // ============================================
+  if (isNFTMintContract(normalized) || isNFTMintTransaction(normalized)) {
+    return { isTrusted: true, category: 'NFT_MINT' };
   }
   
   // Check bridges
@@ -903,13 +925,42 @@ function analyzeAttackerCorrelation(
   const blockers: string[] = [];
 
   // Collect all addresses this wallet has interacted with
+  // EXCLUDING: NFT mints, legitimate protocol interactions
   const interactedAddresses = new Set<string>();
   
   for (const tx of transactions) {
-    if (tx.from.toLowerCase() === walletAddress) {
+    // Skip NFT mint transactions - these are ALWAYS legitimate
+    if (tx.methodId && isStandardMintMethod(tx.methodId)) {
+      console.log(`[CompromiseDetector] Skipping mint transaction to ${tx.to?.slice(0, 10)}...`);
+      continue;
+    }
+    
+    // ============================================
+    // PAID TRANSACTION = PURCHASE = SAFE
+    // ============================================
+    // If user is sending value (paying), this is a purchase, NOT drain behavior
+    if (isPaidMintTransaction(tx.methodId, tx.value)) {
+      console.log(`[CompromiseDetector] Skipping paid transaction to ${tx.to?.slice(0, 10)}... (value: ${tx.value}) - likely purchase`);
+      continue;
+    }
+    
+    // Skip NFT mint transactions based on destination, value, and chain
+    // CRITICAL: Pass chain to enable Base-specific permissive rules
+    if (tx.to && isNFTMintTransaction(tx.to, tx.methodId, BigInt(tx.value || '0'), chain)) {
+      console.log(`[CompromiseDetector] Skipping NFT mint to ${tx.to?.slice(0, 10)}... (chain: ${chain})`);
+      continue;
+    }
+    
+    // Skip Base NFT activity (broad protection)
+    if (chain === 'base' && tx.to && isBaseNFTActivity(tx.to, tx.methodId)) {
+      console.log(`[CompromiseDetector] Skipping Base NFT activity to ${tx.to?.slice(0, 10)}...`);
+      continue;
+    }
+    
+    if (tx.from.toLowerCase() === walletAddress && tx.to) {
       interactedAddresses.add(tx.to.toLowerCase());
     }
-    if (tx.to.toLowerCase() === walletAddress) {
+    if (tx.to && tx.to.toLowerCase() === walletAddress) {
       interactedAddresses.add(tx.from.toLowerCase());
     }
   }
@@ -925,6 +976,69 @@ function analyzeAttackerCorrelation(
 
   // CHECK 1: Interaction with known drainer/sweeper clusters
   for (const addr of interactedAddresses) {
+    // ============================================
+    // FALSE POSITIVE PREVENTION: Skip trusted addresses
+    // ============================================
+    // NFT mint contracts, marketplaces, DEX routers, bridges, etc.
+    // should NEVER be flagged as malicious, even if external sources
+    // (like GoPlus) have false positive entries for them.
+    
+    // Skip NFT mint contracts
+    if (isNFTMintContract(addr)) {
+      console.log(`[CompromiseDetector] Skipping ${addr.slice(0, 10)}... - NFT mint contract`);
+      continue;
+    }
+    
+    // Skip Base NFT activity (Union Authena, Zora, etc.)
+    if (chain === 'base' && isBaseNFTActivity(addr)) {
+      console.log(`[CompromiseDetector] Skipping ${addr.slice(0, 10)}... - Base NFT activity`);
+      continue;
+    }
+    
+    // Skip NFT marketplaces
+    if (isNFTMarketplace(addr)) {
+      console.log(`[CompromiseDetector] Skipping ${addr.slice(0, 10)}... - NFT marketplace`);
+      continue;
+    }
+    
+    // Skip DeFi protocols
+    if (isDeFiProtocol(addr)) {
+      console.log(`[CompromiseDetector] Skipping ${addr.slice(0, 10)}... - DeFi protocol`);
+      continue;
+    }
+    
+    // Skip ENS contracts
+    if (isENSContract(addr)) {
+      console.log(`[CompromiseDetector] Skipping ${addr.slice(0, 10)}... - ENS contract`);
+      continue;
+    }
+    
+    // Skip infrastructure contracts
+    if (isInfrastructureContract(addr)) {
+      console.log(`[CompromiseDetector] Skipping ${addr.slice(0, 10)}... - infrastructure contract`);
+      continue;
+    }
+    
+    // Skip safe contracts
+    if (isSafeContract(addr)) {
+      console.log(`[CompromiseDetector] Skipping ${addr.slice(0, 10)}... - safe contract`);
+      continue;
+    }
+    
+    // Skip legitimate contracts from malicious-database checks
+    if (isLegitimateContract(addr)) {
+      console.log(`[CompromiseDetector] Skipping ${addr.slice(0, 10)}... - legitimate contract`);
+      continue;
+    }
+    
+    // Skip infrastructure-protected addresses
+    const infraCheck = checkInfrastructureProtection(addr, chain);
+    if (infraCheck.isProtected) {
+      console.log(`[CompromiseDetector] Skipping ${addr.slice(0, 10)}... - protected infrastructure (${infraCheck.name})`);
+      continue;
+    }
+    
+    // Now check if it's actually malicious
     const maliciousInfo = isMaliciousAddress(addr, chain);
     if (maliciousInfo) {
       evidence.push({
@@ -1021,15 +1135,48 @@ function analyzeTimingAnomalies(
   const evidence: CompromiseEvidence[] = [];
   const reasonCodes: CompromiseReasonCode[] = [];
   const blockers: string[] = [];
+  
+  // ============================================
+  // HELPER: Check if destination is legitimate
+  // ============================================
+  const isLegitimateDestination = (address: string): boolean => {
+    const normalized = address.toLowerCase();
+    
+    // Check self-transfer
+    if (checkSelfTransfer(walletAddress, normalized).isSelfTransfer) return true;
+    
+    // Check safe contracts
+    if (isSafeContract(normalized)) return true;
+    if (isDeFiProtocol(normalized)) return true;
+    if (isNFTMarketplace(normalized)) return true;
+    if (isNFTMintContract(normalized)) return true;
+    if (isENSContract(normalized)) return true;
+    if (isInfrastructureContract(normalized)) return true;
+    if (isLegitimateContract(normalized)) return true;
+    
+    // Check Base-specific protocols
+    const baseProtocol = checkBaseProtocolInteraction(normalized);
+    if (baseProtocol.isLegitimateProtocol) return true;
+    
+    // Check exchange wallets
+    const exchangeCheck = checkExchangeWallet(normalized);
+    if (exchangeCheck.isExchange) return true;
+    
+    return false;
+  };
 
   // Sort transactions by timestamp
   const sortedTxs = [...transactions].sort((a, b) => a.timestamp - b.timestamp);
   const sortedTransfers = [...tokenTransfers].sort((a, b) => a.timestamp - b.timestamp);
 
   // CHECK 1: Sudden asset outflows shortly after approvals
+  // MODIFIED: Only count outflows to UNKNOWN/SUSPICIOUS destinations
   for (const approval of approvals) {
     const outflowsAfterApproval = sortedTransfers.filter(t => {
       const timeDelta = t.timestamp - approval.timestamp;
+      // Skip if destination is legitimate
+      if (isLegitimateDestination(t.to)) return false;
+      
       return (
         timeDelta > 0 &&
         timeDelta <= RAPID_DRAIN_WINDOW_SECONDS &&
@@ -1052,7 +1199,13 @@ function analyzeTimingAnomalies(
   }
 
   // CHECK 2: Multiple asset types drained within short window
-  const outgoingTransfers = sortedTransfers.filter(t => t.from.toLowerCase() === walletAddress);
+  // MODIFIED: Only consider outflows to UNKNOWN/SUSPICIOUS destinations
+  const outgoingTransfers = sortedTransfers.filter(t => {
+    if (t.from.toLowerCase() !== walletAddress) return false;
+    // Skip legitimate destinations
+    if (isLegitimateDestination(t.to)) return false;
+    return true;
+  });
   
   // Group transfers by 30-minute windows
   const windowGroups = new Map<number, TokenTransferForAnalysis[]>();

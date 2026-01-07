@@ -80,10 +80,23 @@ interface GoPlusAddressResponse {
   };
 }
 
+// ============================================
+// EXPLICIT WHITELIST - NEVER FLAG THESE
+// ============================================
+const GOPLUS_WHITELIST = new Set([
+  '0x24cea16d97f61d0882481544f33fa5a8763991a6', // Union Authena (Base)
+]);
+
 export async function checkGoPlusAddressSecurity(
   address: string,
   chainId: number = 1
 ): Promise<ThreatIntelResult | null> {
+  // WHITELIST CHECK - skip external check entirely for whitelisted addresses
+  if (GOPLUS_WHITELIST.has(address.toLowerCase())) {
+    console.log(`[GoPlus] Skipping ${address.slice(0, 10)}... - WHITELISTED`);
+    return null;
+  }
+  
   try {
     const url = `https://api.gopluslabs.io/api/v1/address_security/${address}?chain_id=${chainId}`;
     
@@ -237,6 +250,12 @@ export async function analyzeContractBytecode(
     isVerified: false,
     isProxy: false,
   };
+  
+  // WHITELIST CHECK - skip bytecode analysis for whitelisted addresses
+  if (GOPLUS_WHITELIST.has(address.toLowerCase())) {
+    console.log(`[Bytecode] Skipping ${address.slice(0, 10)}... - WHITELISTED`);
+    return result;
+  }
   
   try {
     // Get RPC URL for the chain

@@ -410,8 +410,22 @@ export const CHAIN_RPC_CONFIG: Record<string, {
 // UTILITY FUNCTIONS
 // ============================================
 
+// ============================================
+// EXPLICIT WHITELIST - HIGHEST PRIORITY
+// ============================================
+// These contract addresses are MANUALLY VERIFIED and should NEVER be flagged
+const EXPLICIT_WHITELIST = new Set([
+  '0x24cea16d97f61d0882481544f33fa5a8763991a6', // Union Authena (Base)
+]);
+
 export function isMaliciousAddress(address: string, chain: string): MaliciousContract | null {
   const normalizedAddress = address.toLowerCase();
+  
+  // EXPLICIT WHITELIST CHECK - highest priority
+  if (EXPLICIT_WHITELIST.has(normalizedAddress)) {
+    console.log(`[isMaliciousAddress] ${normalizedAddress.slice(0, 10)}... is EXPLICITLY WHITELISTED - NEVER malicious`);
+    return null;
+  }
   
   // ============================================
   // CRITICAL: CHECK INFRASTRUCTURE PROTECTION FIRST
@@ -491,6 +505,11 @@ export function isMaliciousAddress(address: string, chain: string): MaliciousCon
 
 export function isDrainerRecipient(address: string): boolean {
   const normalizedAddress = address.toLowerCase();
+  
+  // EXPLICIT WHITELIST CHECK - highest priority
+  if (EXPLICIT_WHITELIST.has(normalizedAddress)) {
+    return false;
+  }
   
   // ============================================
   // CRITICAL: Infrastructure contracts can NEVER be drainer recipients

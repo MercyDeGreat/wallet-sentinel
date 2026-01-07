@@ -173,6 +173,46 @@ export type SolanaSecurityStatus =
   | 'AT_RISK'                    // On-chain risk indicators found
   | 'COMPROMISED';               // Strong on-chain evidence of compromise
 
+// ============================================
+// SOLANA THREE-STATE SECURITY MODEL
+// ============================================
+// Three explicit wallet states for Solana:
+// - SAFE: No historical or active compromise signals
+// - PREVIOUSLY_COMPROMISED: No active drain behavior detected, but past incidents exist
+// - ACTIVELY_COMPROMISED: Ongoing automated or hostile fund movement
+//
+// DESIGN PHILOSOPHY: Prefer false negatives over false positives.
+// This tool is for protection, not fear amplification.
+
+export type SolanaWalletSecurityState =
+  | 'SAFE'                    // No historical or active compromise signals
+  | 'PREVIOUSLY_COMPROMISED'  // Past incidents exist but no active threat
+  | 'ACTIVELY_COMPROMISED';   // Ongoing hostile fund movement
+
+export interface SolanaSecurityAnalysis {
+  // Primary security state
+  state: SolanaWalletSecurityState;
+  
+  // Confidence in this assessment (0-100)
+  confidence: number;
+  
+  // Whether risk is historical or active
+  isHistorical: boolean;
+  isActive: boolean;
+  
+  // Number of independent high-confidence signals
+  signalCount: number;
+  
+  // Explanation string (never alarming unless ACTIVE compromise confirmed)
+  explanation: string;
+  
+  // Risk score (0-100)
+  riskScore: number;
+  
+  // Days since last suspicious activity
+  daysSinceLastIncident?: number;
+}
+
 // Secondary tags that provide additional context without affecting risk score
 export type SecondarySecurityTag = 
   | 'HISTORICAL_OFFCHAIN_COMPROMISE_POSSIBLE'  // For Solana - off-chain attacks may have occurred

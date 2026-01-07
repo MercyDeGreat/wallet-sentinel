@@ -21,9 +21,15 @@
 // CONFIDENCE THRESHOLD: Only show "Sweeper Bot" if confidence ≥ 0.85
 
 import { Chain, RiskLevel, WalletRole, AttackType, DetectedThreat } from '@/types';
-import { isSafeContract, SafeContract } from './safe-contracts';
+import { isSafeContract, SafeContract, isDEXRouterOnChain } from './safe-contracts';
 import { isKnownDrainer } from './drainer-addresses';
 import { isLegitimateContract } from './malicious-database';
+import { 
+  checkInfrastructureProtection, 
+  isVerifiedDEXRouter,
+  checkBaseDEXActivity,
+  isNormalDEXActivityOnly,
+} from './infrastructure-protection';
 
 // ============================================
 // ENHANCED CLASSIFICATION TYPES
@@ -87,12 +93,15 @@ const PRESALE_CONTRACTS = new Set([
 ]);
 
 const DEX_PROTOCOLS = new Set([
+  // ============================================
+  // ETHEREUM MAINNET DEX ROUTERS
+  // ============================================
   // Uniswap
-  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d',
-  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45',
-  '0xe592427a0aece92de3edee1f18e0157c05861564',
-  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b',
-  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad',
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // V2 Router
+  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45', // V3 Router 02
+  '0xe592427a0aece92de3edee1f18e0157c05861564', // V3 SwapRouter
+  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b', // Universal Router
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad', // Universal Router V2
   // Pendle
   '0x0000000001e4ef00d069e71d6ba041b0a16f7ea0',
   '0x888888888889758f76e7103c6cbf23abbf58f946',
@@ -103,9 +112,45 @@ const DEX_PROTOCOLS = new Set([
   '0xba12222222228d8ba445958a75a0704d566bf2c8',
   // SushiSwap
   '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f',
-  // PancakeSwap
+  // PancakeSwap (BNB)
   '0x10ed43c718714eb63d5aa57b78b54704e256024e',
   '0x13f4ea83d0bd40e75c8222255bc855a974568dd4',
+  
+  // ============================================
+  // BASE CHAIN DEX ROUTERS
+  // ============================================
+  // CRITICAL: Base Uniswap routers must be evaluated using Base-specific allowlists
+  // DEX interaction alone ≠ compromise signal
+  '0x2626664c2603336e57b271c5c0b26f421741e481', // Uniswap V3 SwapRouter02 (Base)
+  '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc', // Uniswap Universal Router (Base)
+  '0x03a520b32c04bf3beef7beb72e919cf822ed34f1', // Uniswap V3 Position Manager (Base)
+  '0x33128a8fc17869897dce68ed026d694621f6fdfd', // Uniswap V3 Factory (Base)
+  '0x8909dc15e40173ff4699343b6eb8132c65e18ec6', // Uniswap V3 Quoter V2 (Base)
+  // Aerodrome (major Base DEX)
+  '0xb4cb800910b228ed3d0834cf79d697127bbb00e5', // Router
+  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43', // Router V2
+  '0x420dd381b31aef6683db6b902084cb0ffece40da', // Voter
+  // BaseSwap
+  '0x827922686190790b37229fd06084350e74485b72',
+  // SushiSwap (Base)
+  '0x8c1a3cf8f83074169fe5d7ad50b978e1cd6b37c7',
+  // Balancer (Base)
+  '0x1b8128c3a1b7d20053d10763ff02466ca7ff99fc',
+  // Aggregators (Base)
+  '0xfbc22278a96299d91d41c453234d97b4f5eb9b2d', // Odos
+  '0x6131b5fae19ea4f9d964eac0408e4408b66337b5', // KyberSwap
+  
+  // ============================================
+  // MULTI-CHAIN AGGREGATORS
+  // ============================================
+  '0xdef1c0ded9bec7f1a1670819833240f027b25eff', // 0x Exchange Proxy
+  '0x1111111254eeb25477b68fb85ed929f73a960582', // 1inch V5
+  '0x111111125421ca6dc452d289314280a0f8842a65', // 1inch V6
+  
+  // ============================================
+  // PERMIT2 (Universal approval manager)
+  // ============================================
+  '0x000000000022d473030f116ddee9f6b43ac78ba3',
 ]);
 
 const BRIDGE_CONTRACTS = new Set([
@@ -395,14 +440,29 @@ export interface TransactionForAnalysis {
 // PROTOCOL RECOGNITION LAYER
 // ============================================
 
-function recognizeProtocol(address: string): { isKnown: boolean; protocol?: string; category?: string } {
+function recognizeProtocol(address: string, chain?: Chain): { isKnown: boolean; protocol?: string; category?: string } {
   if (!address) return { isKnown: false };
   
   const normalized = address.toLowerCase();
   
-  // Check safe contracts first
+  // Check infrastructure protection first (highest priority)
+  const infraProtection = checkInfrastructureProtection(normalized, chain);
+  if (infraProtection.isProtected) {
+    return { 
+      isKnown: true, 
+      protocol: infraProtection.name || 'Protected Infrastructure', 
+      category: infraProtection.type || 'INFRASTRUCTURE' 
+    };
+  }
+  
+  // Check safe contracts
   const safeContract = isSafeContract(normalized);
   if (safeContract) {
+    // If chain specified, verify contract is valid for that chain
+    if (chain && !safeContract.chains.includes(chain)) {
+      // Contract exists but not on this chain - still recognize it
+      return { isKnown: true, protocol: safeContract.name, category: safeContract.category };
+    }
     return { isKnown: true, protocol: safeContract.name, category: safeContract.category };
   }
   
@@ -439,6 +499,36 @@ function recognizeProtocol(address: string): { isKnown: boolean; protocol?: stri
   }
   
   return { isKnown: false };
+}
+
+/**
+ * Chain-aware protocol recognition.
+ * CRITICAL: Base chain Uniswap routers must be evaluated using Base-specific allowlists.
+ */
+function recognizeProtocolOnChain(address: string, chain: Chain): { 
+  isKnown: boolean; 
+  protocol?: string; 
+  category?: string;
+  isDEXRouter?: boolean;
+} {
+  const baseResult = recognizeProtocol(address, chain);
+  
+  // Additional check for DEX routers on specific chain
+  const isDEXRouter = isVerifiedDEXRouter(address, chain);
+  
+  if (isDEXRouter && !baseResult.isKnown) {
+    return {
+      isKnown: true,
+      protocol: 'Verified DEX Router',
+      category: 'DEX',
+      isDEXRouter: true,
+    };
+  }
+  
+  return {
+    ...baseResult,
+    isDEXRouter: isDEXRouter || baseResult.category === 'DEX' || baseResult.category === 'AGGREGATOR',
+  };
 }
 
 // ============================================
@@ -629,6 +719,50 @@ export async function analyzeWalletBehavior(
   const safeTxs = Array.isArray(transactions) 
     ? transactions.filter(tx => tx != null) 
     : [];
+
+  // ============================================
+  // STEP 0: CHECK FOR DEX-ONLY ACTIVITY (RULE: DEX interaction alone ≠ compromise signal)
+  // ============================================
+  // If the ONLY indicators are Uniswap swap, liquidity add/remove, or token approval
+  // to verified router → force SAFE status with risk score 0-1
+  const dexActivityCheck = isNormalDEXActivityOnly(
+    safeTxs.map(tx => ({ to: tx.to, methodId: tx.methodId, chain }))
+  );
+  
+  if (dexActivityCheck.isNormalDEXOnly && dexActivityCheck.forceSafeStatus) {
+    return {
+      classification: 'NORMAL_USER',
+      walletRole: 'UNKNOWN',
+      confidence: 95,
+      isDefinitelyMalicious: false,
+      isProbablyMalicious: false,
+      showCriticalAlert: false,
+      explanation: dexActivityCheck.explanation,
+      evidence: [{
+        type: 'DEX_SWAP_DETECTED',
+        description: dexActivityCheck.explanation,
+        weight: -50,
+        data: { chain, transactionCount: safeTxs.length },
+      }],
+      riskScore: 0, // Force risk score to 0 for normal DEX activity
+      riskLevel: 'LOW',
+      threats: [],
+      detectedIntents: [{
+        type: 'DEX_SWAP',
+        confidence: 0.95,
+        description: dexActivityCheck.explanation,
+      }],
+      explainability: {
+        classificationReason: dexActivityCheck.explanation,
+        behavioralTriggers: [],
+        userIntentDetected: ['Normal DEX activity detected'],
+        protocolInteractionDetected: ['Verified DEX router interaction'],
+        sweeperRuledOutReasons: ['DEX interaction alone ≠ compromise signal'],
+        failedSweeperCriteria: ['Interacts with verified DEX protocols'],
+        passedSweeperCriteria: [],
+      },
+    };
+  }
 
   // ============================================
   // STEP 1: Check if address is in known drainer database

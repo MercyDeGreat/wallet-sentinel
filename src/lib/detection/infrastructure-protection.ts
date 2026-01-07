@@ -205,7 +205,7 @@ export const PROTECTED_INFRASTRUCTURE: ProtectedContract[] = [
   },
   
   // ============================================
-  // DEX ROUTERS
+  // DEX ROUTERS - ETHEREUM
   // ============================================
   {
     address: '0x7a250d5630b4cf539739df2c5dacb4c659f2488d',
@@ -227,6 +227,15 @@ export const PROTECTED_INFRASTRUCTURE: ProtectedContract[] = [
   },
   {
     address: '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45',
+    name: 'Uniswap V3 Router 02',
+    type: 'DEX_ROUTER',
+    chains: ['ethereum', 'base'],
+    verified: true,
+    website: 'https://uniswap.org',
+    absoluteProtection: true,
+  },
+  {
+    address: '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b',
     name: 'Uniswap Universal Router',
     type: 'DEX_ROUTER',
     chains: ['ethereum', 'base'],
@@ -243,6 +252,120 @@ export const PROTECTED_INFRASTRUCTURE: ProtectedContract[] = [
     website: 'https://uniswap.org',
     absoluteProtection: true,
   },
+  
+  // ============================================
+  // DEX ROUTERS - BASE CHAIN SPECIFIC
+  // ============================================
+  // CRITICAL: These are verified Uniswap/DEX contracts on Base.
+  // DEX interaction alone ≠ compromise signal
+  {
+    address: '0x2626664c2603336e57b271c5c0b26f421741e481',
+    name: 'Uniswap V3 SwapRouter02 (Base)',
+    type: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    website: 'https://uniswap.org',
+    description: 'Official Uniswap V3 router on Base chain - swaps are normal activity',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc',
+    name: 'Uniswap Universal Router (Base)',
+    type: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    website: 'https://uniswap.org',
+    description: 'Official Uniswap Universal Router on Base chain',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x03a520b32c04bf3beef7beb72e919cf822ed34f1',
+    name: 'Uniswap V3 Position Manager (Base)',
+    type: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    website: 'https://uniswap.org',
+    description: 'Uniswap V3 NFT Position Manager for liquidity positions on Base',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x33128a8fc17869897dce68ed026d694621f6fdfd',
+    name: 'Uniswap V3 Factory (Base)',
+    type: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    website: 'https://uniswap.org',
+    description: 'Uniswap V3 Factory contract on Base',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x8909dc15e40173ff4699343b6eb8132c65e18ec6',
+    name: 'Uniswap V3 Quoter V2 (Base)',
+    type: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    website: 'https://uniswap.org',
+    description: 'Uniswap V3 Quoter for price quotes on Base',
+    absoluteProtection: true,
+  },
+  {
+    address: '0xb4cb800910b228ed3d0834cf79d697127bbb00e5',
+    name: 'Aerodrome Router (Base)',
+    type: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    website: 'https://aerodrome.finance',
+    description: 'Aerodrome DEX router - major Base DEX',
+    absoluteProtection: true,
+  },
+  {
+    address: '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43',
+    name: 'Aerodrome Router V2 (Base)',
+    type: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    website: 'https://aerodrome.finance',
+    description: 'Aerodrome V2 router on Base',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x827922686190790b37229fd06084350e74485b72',
+    name: 'BaseSwap Router (Base)',
+    type: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    website: 'https://baseswap.fi',
+    description: 'BaseSwap DEX router on Base',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x8c1a3cf8f83074169fe5d7ad50b978e1cd6b37c7',
+    name: 'SushiSwap RouteProcessor3 (Base)',
+    type: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    website: 'https://sushi.com',
+    description: 'SushiSwap router on Base chain',
+    absoluteProtection: true,
+  },
+  
+  // ============================================
+  // BASE CHAIN NFT CONTRACTS - VERIFIED SAFE
+  // ============================================
+  {
+    address: '0x24cea16d97f61d0882481544f33fa5a8763991a6',
+    name: 'Union Authena (Base)',
+    type: 'NFT_MARKETPLACE',
+    chains: ['base'],
+    verified: true,
+    website: 'https://union.build',
+    description: 'Union Authena NFT mint contract - verified legitimate Base NFT project',
+    absoluteProtection: true,
+  },
+  
+  // ============================================
+  // DEX AGGREGATORS - MULTI-CHAIN
+  // ============================================
   {
     address: '0x1111111254eeb25477b68fb85ed929f73a960582',
     name: '1inch Aggregation Router V5',
@@ -268,6 +391,24 @@ export const PROTECTED_INFRASTRUCTURE: ProtectedContract[] = [
     chains: ['ethereum', 'base', 'bnb'],
     verified: true,
     website: 'https://0x.org',
+    absoluteProtection: true,
+  },
+  {
+    address: '0xfbc22278a96299d91d41c453234d97b4f5eb9b2d',
+    name: 'Odos Router V2',
+    type: 'AGGREGATOR',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    website: 'https://odos.xyz',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x6131b5fae19ea4f9d964eac0408e4408b66337b5',
+    name: 'KyberSwap Router',
+    type: 'AGGREGATOR',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    website: 'https://kyberswap.com',
     absoluteProtection: true,
   },
   
@@ -606,11 +747,279 @@ export function getProtectedContract(address: string): ProtectedContract | undef
 }
 
 // ============================================
+// BASE CHAIN DEX ALLOWLIST
+// ============================================
+// Chain-aware DEX detection for Base chain
+// RULE: DEX interaction alone ≠ compromise signal
+
+const BASE_DEX_ROUTERS: Set<string> = new Set([
+  // Uniswap on Base
+  '0x2626664c2603336e57b271c5c0b26f421741e481', // SwapRouter02
+  '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc', // Universal Router
+  '0x03a520b32c04bf3beef7beb72e919cf822ed34f1', // Position Manager
+  '0x33128a8fc17869897dce68ed026d694621f6fdfd', // V3 Factory
+  '0x8909dc15e40173ff4699343b6eb8132c65e18ec6', // Quoter V2
+  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45', // Router 02 (shared)
+  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b', // Universal Router (shared)
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad', // Universal Router V2 (shared)
+  '0x000000000022d473030f116ddee9f6b43ac78ba3', // Permit2
+  
+  // Aerodrome (major Base DEX)
+  '0xb4cb800910b228ed3d0834cf79d697127bbb00e5', // Router
+  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43', // Router V2
+  '0x420dd381b31aef6683db6b902084cb0ffece40da', // Voter
+  
+  // BaseSwap
+  '0x827922686190790b37229fd06084350e74485b72',
+  
+  // SushiSwap
+  '0x8c1a3cf8f83074169fe5d7ad50b978e1cd6b37c7',
+  
+  // Balancer
+  '0x1b8128c3a1b7d20053d10763ff02466ca7ff99fc',
+  
+  // Aggregators
+  '0xfbc22278a96299d91d41c453234d97b4f5eb9b2d', // Odos
+  '0x6131b5fae19ea4f9d964eac0408e4408b66337b5', // KyberSwap
+  '0xdef1c0ded9bec7f1a1670819833240f027b25eff', // 0x
+  '0x1111111254eeb25477b68fb85ed929f73a960582', // 1inch V5
+  '0x111111125421ca6dc452d289314280a0f8842a65', // 1inch V6
+]);
+
+// DEX method signatures (swap, add/remove liquidity, etc.)
+const DEX_METHOD_SIGNATURES: Set<string> = new Set([
+  // Uniswap V2 style
+  '0x38ed1739', // swapExactTokensForTokens
+  '0x8803dbee', // swapTokensForExactTokens
+  '0x7ff36ab5', // swapExactETHForTokens
+  '0x4a25d94a', // swapTokensForExactETH
+  '0x18cbafe5', // swapExactTokensForETH
+  '0xfb3bdb41', // swapETHForExactTokens
+  '0x5c11d795', // swapExactTokensForTokensSupportingFeeOnTransferTokens
+  '0xb6f9de95', // swapExactETHForTokensSupportingFeeOnTransferTokens
+  '0x791ac947', // swapExactTokensForETHSupportingFeeOnTransferTokens
+  
+  // Uniswap V3 style
+  '0x04e45aaf', // exactInputSingle
+  '0xb858183f', // exactInput
+  '0x5023b4df', // exactOutputSingle
+  '0x09b81346', // exactOutput
+  '0x472b43f3', // swapExactTokensForTokens (Universal Router)
+  
+  // Liquidity
+  '0xe8e33700', // addLiquidity
+  '0xf305d719', // addLiquidityETH
+  '0xbaa2abde', // removeLiquidity
+  '0x02751cec', // removeLiquidityETH
+  '0xaf2979eb', // removeLiquidityETHSupportingFeeOnTransferTokens
+  '0x2195995c', // removeLiquidityETHWithPermit
+  '0x5b0d5984', // removeLiquidityETHWithPermitSupportingFeeOnTransferTokens
+  
+  // V3 Liquidity
+  '0x88316456', // mint (V3 position)
+  '0x0c49ccbe', // decreaseLiquidity
+  '0x219f5d17', // increaseLiquidity
+  '0xfc6f7865', // collect
+  
+  // Universal Router
+  '0x3593564c', // execute (Universal Router)
+  '0x24856bc3', // execute (with deadline)
+]);
+
+// ============================================
+// DEX ACTIVITY DETECTION
+// ============================================
+
+export interface DEXActivityResult {
+  isDEXActivity: boolean;
+  isVerifiedRouter: boolean;
+  routerName?: string;
+  activityType?: 'SWAP' | 'LIQUIDITY_ADD' | 'LIQUIDITY_REMOVE' | 'APPROVAL' | 'OTHER';
+  chain: Chain;
+  shouldFlagAsCompromise: false | 'MAYBE';
+  explanation: string;
+}
+
+/**
+ * Check if a transaction is DEX activity on Base chain.
+ * 
+ * RULE: DEX interaction alone ≠ compromise signal
+ * 
+ * Returns shouldFlagAsCompromise: false if this is legitimate DEX activity.
+ */
+export function checkBaseDEXActivity(
+  toAddress: string,
+  methodId?: string
+): DEXActivityResult {
+  const normalized = toAddress?.toLowerCase() || '';
+  
+  // Check if destination is a known Base DEX router
+  if (BASE_DEX_ROUTERS.has(normalized)) {
+    const contract = protectionIndex.get(normalized);
+    const methodSig = methodId?.slice(0, 10).toLowerCase() || '';
+    
+    let activityType: DEXActivityResult['activityType'] = 'OTHER';
+    if (methodSig) {
+      if (methodSig.startsWith('0x38ed') || methodSig.startsWith('0x04e4') || 
+          methodSig.startsWith('0x7ff3') || methodSig.startsWith('0x18cb') ||
+          methodSig.startsWith('0xb858') || methodSig.startsWith('0x472b') ||
+          methodSig.startsWith('0x3593')) {
+        activityType = 'SWAP';
+      } else if (methodSig.startsWith('0xe8e3') || methodSig.startsWith('0xf305') ||
+                 methodSig.startsWith('0x8831') || methodSig.startsWith('0x219f')) {
+        activityType = 'LIQUIDITY_ADD';
+      } else if (methodSig.startsWith('0xbaa2') || methodSig.startsWith('0x02751') ||
+                 methodSig.startsWith('0x0c49')) {
+        activityType = 'LIQUIDITY_REMOVE';
+      } else if (methodSig === '0x095ea7b3') {
+        activityType = 'APPROVAL';
+      }
+    }
+    
+    return {
+      isDEXActivity: true,
+      isVerifiedRouter: true,
+      routerName: contract?.name || 'Verified Base DEX Router',
+      activityType,
+      chain: 'base',
+      shouldFlagAsCompromise: false,
+      explanation: `Normal DEX activity detected (Base chain). Transaction to ${contract?.name || 'verified router'} is legitimate.`,
+    };
+  }
+  
+  // Check if method signature is DEX-related even if router not in list
+  const methodSig = methodId?.slice(0, 10).toLowerCase() || '';
+  if (methodSig && DEX_METHOD_SIGNATURES.has(methodSig)) {
+    return {
+      isDEXActivity: true,
+      isVerifiedRouter: false,
+      activityType: 'SWAP',
+      chain: 'base',
+      shouldFlagAsCompromise: 'MAYBE',
+      explanation: 'DEX method signature detected but router not verified. Manual review recommended.',
+    };
+  }
+  
+  return {
+    isDEXActivity: false,
+    isVerifiedRouter: false,
+    chain: 'base',
+    shouldFlagAsCompromise: 'MAYBE',
+    explanation: 'Not recognized as DEX activity.',
+  };
+}
+
+/**
+ * Check if activity is normal DEX usage that should NOT trigger compromise alerts.
+ * 
+ * RULE: If ONLY indicators are Uniswap swap, liquidity add/remove, or token approval
+ * to verified router → force SAFE status with risk score 0-1.
+ */
+export function isNormalDEXActivityOnly(
+  transactions: { to: string; methodId?: string; chain: Chain }[]
+): { isNormalDEXOnly: boolean; explanation: string; forceSafeStatus: boolean } {
+  if (transactions.length === 0) {
+    return { isNormalDEXOnly: false, explanation: 'No transactions to analyze', forceSafeStatus: false };
+  }
+  
+  let dexActivityCount = 0;
+  let nonDEXActivityCount = 0;
+  const dexRoutersUsed: string[] = [];
+  
+  for (const tx of transactions) {
+    const toAddr = tx.to?.toLowerCase() || '';
+    const chain = tx.chain;
+    
+    // Check chain-specific DEX routers
+    let isDEXRouter = false;
+    
+    if (chain === 'base') {
+      isDEXRouter = BASE_DEX_ROUTERS.has(toAddr);
+    } else {
+      // Check general protection
+      const protection = checkInfrastructureProtection(toAddr, chain);
+      isDEXRouter = protection.isProtected && 
+                    (protection.type === 'DEX_ROUTER' || protection.type === 'AGGREGATOR');
+    }
+    
+    if (isDEXRouter) {
+      dexActivityCount++;
+      const contract = protectionIndex.get(toAddr);
+      if (contract?.name && !dexRoutersUsed.includes(contract.name)) {
+        dexRoutersUsed.push(contract.name);
+      }
+    } else {
+      nonDEXActivityCount++;
+    }
+  }
+  
+  // If ALL transactions are DEX activity → SAFE
+  if (nonDEXActivityCount === 0 && dexActivityCount > 0) {
+    return {
+      isNormalDEXOnly: true,
+      explanation: `Normal DEX activity detected (${transactions[0].chain} chain). ` +
+                   `${dexActivityCount} transaction(s) to verified DEX routers: ${dexRoutersUsed.join(', ')}.`,
+      forceSafeStatus: true,
+    };
+  }
+  
+  // If majority (>80%) is DEX activity → likely SAFE
+  const dexRatio = dexActivityCount / (dexActivityCount + nonDEXActivityCount);
+  if (dexRatio > 0.8 && dexActivityCount >= 3) {
+    return {
+      isNormalDEXOnly: true,
+      explanation: `Predominantly DEX activity (${Math.round(dexRatio * 100)}%). ` +
+                   `${dexActivityCount} DEX transactions, ${nonDEXActivityCount} other.`,
+      forceSafeStatus: true,
+    };
+  }
+  
+  return {
+    isNormalDEXOnly: false,
+    explanation: `Mixed activity: ${dexActivityCount} DEX, ${nonDEXActivityCount} other transactions.`,
+    forceSafeStatus: false,
+  };
+}
+
+/**
+ * Chain-aware DEX router check.
+ * Returns true if address is a verified DEX router on the specified chain.
+ */
+export function isVerifiedDEXRouter(address: string, chain: Chain): boolean {
+  const normalized = address?.toLowerCase() || '';
+  
+  if (chain === 'base') {
+    return BASE_DEX_ROUTERS.has(normalized);
+  }
+  
+  const contract = protectionIndex.get(normalized);
+  if (!contract) return false;
+  
+  return contract.chains.includes(chain) && 
+         (contract.type === 'DEX_ROUTER' || contract.type === 'AGGREGATOR');
+}
+
+/**
+ * Get all verified DEX routers for a specific chain.
+ */
+export function getVerifiedDEXRouters(chain: Chain): string[] {
+  if (chain === 'base') {
+    return Array.from(BASE_DEX_ROUTERS);
+  }
+  
+  return PROTECTED_INFRASTRUCTURE
+    .filter(c => c.chains.includes(chain) && (c.type === 'DEX_ROUTER' || c.type === 'AGGREGATOR'))
+    .map(c => c.address);
+}
+
+// ============================================
 // EXPORTS
 // ============================================
 
 export {
   isOpenSeaVanityAddress,
   getExpectedBehavior,
+  BASE_DEX_ROUTERS,
+  DEX_METHOD_SIGNATURES,
 };
 

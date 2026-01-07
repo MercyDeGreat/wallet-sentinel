@@ -66,9 +66,20 @@ export const DRAINER_RECIPIENTS: string[] = [
 ];
 
 // Function to check if an address is a known drainer
+// ============================================
+// EXPLICIT WHITELIST - NEVER FLAG THESE
+// ============================================
+const EXPLICIT_WHITELIST = new Set([
+  '0x24cea16d97f61d0882481544f33fa5a8763991a6', // Union Authena (Base)
+]);
+
 export function isKnownDrainer(address: string): boolean {
   if (!address) return false;
   const normalized = address.toLowerCase();
+  
+  // WHITELIST CHECK
+  if (EXPLICIT_WHITELIST.has(normalized)) return false;
+  
   return DRAINER_CONTRACTS.some(d => d.toLowerCase() === normalized) ||
          DRAINER_RECIPIENTS.some(d => d.toLowerCase() === normalized);
 }
@@ -77,6 +88,9 @@ export function isKnownDrainer(address: string): boolean {
 export function getDrainerType(address: string): string | null {
   if (!address) return null;
   const normalized = address.toLowerCase();
+  
+  // WHITELIST CHECK
+  if (EXPLICIT_WHITELIST.has(normalized)) return null;
   
   // Check specific patterns in the address
   if (normalized.includes('db5c8b030ae20308ac975898e09741e7')) return 'Inferno Drainer';
