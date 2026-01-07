@@ -621,5 +621,3 @@ function generateClassificationSummary(
   }
 }
 
-export { classifyAttack };
-

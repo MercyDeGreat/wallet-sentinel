@@ -575,6 +575,14 @@ function StatusBadge({
       text: 'text-blue-400',       // Blue text - neutral/informational
       dot: 'status-dot-info',      // Info dot, not warning
     },
+    PREVIOUSLY_COMPROMISED_NO_ACTIVITY: {
+      icon: Shield,
+      label: 'PREVIOUSLY COMPROMISED (NO ACTIVITY)',
+      bg: 'bg-blue-500/10',
+      border: 'border-blue-500/30',
+      text: 'text-blue-400',
+      dot: 'status-dot-info',
+    },
     POTENTIALLY_COMPROMISED: {
       icon: AlertTriangle,
       label: 'POTENTIALLY COMPROMISED',

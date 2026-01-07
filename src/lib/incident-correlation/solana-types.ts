@@ -461,15 +461,15 @@ export function generateSolanaIncidentId(): string {
 }
 
 export function isKnownNFTProgram(programId: string): boolean {
-  return SOLANA_NFT_PROGRAMS.has(programId);
+  return (SOLANA_NFT_PROGRAMS as Set<string>).has(programId);
 }
 
 export function isKnownDEXProgram(programId: string): boolean {
-  return SOLANA_DEX_PROGRAMS.has(programId);
+  return (SOLANA_DEX_PROGRAMS as Set<string>).has(programId);
 }
 
 export function isKnownBridgeProgram(programId: string): boolean {
-  return SOLANA_BRIDGE_PROGRAMS.has(programId);
+  return (SOLANA_BRIDGE_PROGRAMS as Set<string>).has(programId);
 }
 
 export function isKnownExchange(address: string): string | null {

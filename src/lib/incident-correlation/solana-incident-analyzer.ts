@@ -598,9 +598,3 @@ export function formatSolanaIncidentForAPI(result: SolanaIncidentAnalysisResult)
   };
 }
 
-export {
-  analyzeSolanaIncident,
-  quickSolanaSeedCompromiseCheck,
-  formatSolanaIncidentForAPI,
-};
-

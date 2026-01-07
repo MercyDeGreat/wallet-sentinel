@@ -637,5 +637,3 @@ function generateMachineReadableEvidence(
   };
 }
 
-export { generateExchangeReport };
-

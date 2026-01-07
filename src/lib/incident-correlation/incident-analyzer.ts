@@ -419,5 +419,3 @@ export function formatIncidentAnalysisForAPI(result: IncidentAnalysisResult): ob
   };
 }
 
-export { analyzeIncident, quickSeedCompromiseCheck, formatIncidentAnalysisForAPI };
-

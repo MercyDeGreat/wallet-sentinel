@@ -1933,7 +1933,7 @@ function generateCompromiseResolutionInfo(
   daysSinceLastIncident?: number,
   drainerOverride?: DrainerOverrideResult
 ): import('@/types').CompromiseResolutionInfo {
-  const hasHistoricalCompromise = historicalThreats.length > 0 || hasPermanentRiskFlag || historicalCompromise?.hasHistoricalIncident;
+  const hasHistoricalCompromise = historicalThreats.length > 0 || hasPermanentRiskFlag || (historicalCompromise?.hasHistoricalIncident === true);
   const hasActiveThreats = activeThreats.length > 0;
   
   // Default values

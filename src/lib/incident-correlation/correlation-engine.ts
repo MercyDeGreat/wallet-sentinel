@@ -515,5 +515,3 @@ function createSingleWalletResult(
   };
 }
 
-export { correlateWallets };
-

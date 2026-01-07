@@ -83,6 +83,12 @@ export function CompromiseStatusBadge({
       border: 'border-red-500/30',
       icon: 'text-red-400',
     },
+    ACTIVE_DRAINER_DETECTED: {
+      bg: 'bg-red-600/20',
+      text: 'text-red-400',
+      border: 'border-red-500/50',
+      icon: 'text-red-400',
+    },
     NONE: {
       bg: 'bg-gray-500/10',
       text: 'text-gray-400',
@@ -156,6 +162,7 @@ export function CompromiseStatusInline({ resolution }: { resolution: CompromiseR
     RESOLVED: 'text-blue-400',
     NO_ACTIVE_RISK: 'text-blue-400',
     ACTIVE_THREAT: 'text-red-400',
+    ACTIVE_DRAINER_DETECTED: 'text-red-400',
     NONE: 'text-gray-400',
   };
   

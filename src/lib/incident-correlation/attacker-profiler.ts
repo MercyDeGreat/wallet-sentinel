@@ -426,8 +426,10 @@ function identifyExitLiquidity(correlation: CorrelationResult): ExitLiquidity[] 
     );
     
     if (exchange) {
+      // Map CEX to EXCHANGE type for compatibility
+      const exitType = exchange.type === 'CEX' ? 'EXCHANGE' : exchange.type as 'BRIDGE' | 'DEX' | 'MIXER' | 'UNKNOWN';
       exitPoints.push({
-        type: exchange.type,
+        type: exitType,
         name: exchange.name,
         address,
         chain: stats.chain,
@@ -502,6 +504,4 @@ function generateProfileId(): string {
   const random = Math.random().toString(36).substring(2, 8);
   return `ATK-${timestamp}-${random}`.toUpperCase();
 }
-
-export { buildAttackerProfile };
 
