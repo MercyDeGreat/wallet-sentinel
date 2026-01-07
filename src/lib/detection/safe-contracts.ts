@@ -1054,6 +1054,71 @@ export const SAFE_CONTRACTS: SafeContract[] = [
   // ============================================
   // BRIDGES
   // ============================================
+  // ============================================
+  // ORBITER FINANCE BRIDGE
+  // ============================================
+  // Orbiter uses Maker EOA addresses for bridging (not contracts)
+  // These are verified Orbiter maker addresses
+  {
+    address: '0x80c67432656d59144ceff962e8faf8926599bcf8',
+    name: 'Orbiter Finance Maker 1',
+    category: 'BRIDGE',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    description: 'Orbiter Finance cross-rollup bridge maker',
+    website: 'https://orbiter.finance',
+    interactionCount: 'HIGH',
+  },
+  {
+    address: '0xe4edb277e41dc89ab076a1f049f4a3efa700bce8',
+    name: 'Orbiter Finance Maker 2',
+    category: 'BRIDGE',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    description: 'Orbiter Finance cross-rollup bridge maker',
+    website: 'https://orbiter.finance',
+    interactionCount: 'HIGH',
+  },
+  {
+    address: '0x41d3d33156ae7c62c094aae2995003ae63f587b3',
+    name: 'Orbiter Finance Maker 3',
+    category: 'BRIDGE',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    description: 'Orbiter Finance cross-rollup bridge maker',
+    website: 'https://orbiter.finance',
+    interactionCount: 'HIGH',
+  },
+  {
+    address: '0xd7aa9ba6caac7b0436c91396f22ca5a7f31664fc',
+    name: 'Orbiter Finance Maker (Base)',
+    category: 'BRIDGE',
+    chains: ['base'],
+    verified: true,
+    description: 'Orbiter Finance maker on Base',
+    website: 'https://orbiter.finance',
+    interactionCount: 'HIGH',
+  },
+  {
+    address: '0x095d2918b03b2e86d68551dcf11302121fb626c9',
+    name: 'Orbiter Finance Router',
+    category: 'BRIDGE',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    description: 'Orbiter Finance bridge router',
+    website: 'https://orbiter.finance',
+    interactionCount: 'HIGH',
+  },
+  {
+    address: '0xe4c7fc2c9c9e13e86bf1fc3bddb7f7089d2b6f22',
+    name: 'Orbiter Finance OBT Token',
+    category: 'TOKEN_CONTRACT',
+    chains: ['ethereum', 'base'],
+    verified: true,
+    description: 'Orbiter Finance token',
+    website: 'https://orbiter.finance',
+    interactionCount: 'HIGH',
+  },
   {
     address: '0x3ee18b2214aff97000d974cf647e7c347e8fa585',
     name: 'Wormhole Token Bridge',

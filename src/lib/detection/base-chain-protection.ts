@@ -58,6 +58,13 @@ export const BASE_BRIDGE_CONTRACTS: Map<string, { name: string; type: string }> 
   ['0x6352a56caadc4f1e25cd6c75970fa768a3304e64', { name: 'Stargate Router', type: 'BRIDGE' }],
   ['0x2dfff1c1ea69b0b71d46c9c79f0f45fe6b77d27a', { name: 'Relay Router', type: 'BRIDGE_AGGREGATOR' }],
   ['0x0000000000001ff3684f28c67538d4d072c22734', { name: 'Across Protocol', type: 'BRIDGE' }],
+  
+  // Orbiter Finance Bridge (uses EOA maker addresses)
+  ['0x80c67432656d59144ceff962e8faf8926599bcf8', { name: 'Orbiter Finance Maker 1', type: 'BRIDGE' }],
+  ['0xe4edb277e41dc89ab076a1f049f4a3efa700bce8', { name: 'Orbiter Finance Maker 2', type: 'BRIDGE' }],
+  ['0x41d3d33156ae7c62c094aae2995003ae63f587b3', { name: 'Orbiter Finance Maker 3', type: 'BRIDGE' }],
+  ['0xd7aa9ba6caac7b0436c91396f22ca5a7f31664fc', { name: 'Orbiter Finance Maker (Base)', type: 'BRIDGE' }],
+  ['0x095d2918b03b2e86d68551dcf11302121fb626c9', { name: 'Orbiter Finance Router', type: 'BRIDGE' }],
 ]);
 
 // ============================================

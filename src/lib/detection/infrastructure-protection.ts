@@ -484,6 +484,56 @@ export const PROTECTED_INFRASTRUCTURE: ProtectedContract[] = [
   },
   
   // ============================================
+  // ORBITER FINANCE BRIDGE
+  // ============================================
+  // Orbiter uses Maker EOA addresses for cross-chain bridging
+  {
+    address: '0x80c67432656d59144ceff962e8faf8926599bcf8',
+    name: 'Orbiter Finance Maker 1',
+    type: 'BRIDGE',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    website: 'https://orbiter.finance',
+    absoluteProtection: true,
+  },
+  {
+    address: '0xe4edb277e41dc89ab076a1f049f4a3efa700bce8',
+    name: 'Orbiter Finance Maker 2',
+    type: 'BRIDGE',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    website: 'https://orbiter.finance',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x41d3d33156ae7c62c094aae2995003ae63f587b3',
+    name: 'Orbiter Finance Maker 3',
+    type: 'BRIDGE',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    website: 'https://orbiter.finance',
+    absoluteProtection: true,
+  },
+  {
+    address: '0xd7aa9ba6caac7b0436c91396f22ca5a7f31664fc',
+    name: 'Orbiter Finance Maker (Base)',
+    type: 'BRIDGE',
+    chains: ['base'],
+    verified: true,
+    website: 'https://orbiter.finance',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x095d2918b03b2e86d68551dcf11302121fb626c9',
+    name: 'Orbiter Finance Router',
+    type: 'BRIDGE',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    website: 'https://orbiter.finance',
+    absoluteProtection: true,
+  },
+  
+  // ============================================
   // ENS INFRASTRUCTURE
   // ============================================
   {

@@ -100,6 +100,14 @@ const EXPLICIT_WHITELIST = new Set([
   // Treeverse NFT Project
   '0x1b829b926a14634d36625e60165c0770c09d02b2', // Treeverse Founders Plot
   '0x55c29a6d0bf39f35f9c72d42c5d29db7e2b4ae29', // Treeverse Deployer
+  // Orbiter Finance Bridge
+  '0x80c67432656d59144ceff962e8faf8926599bcf8', // Orbiter Finance Maker 1
+  '0xe4edb277e41dc89ab076a1f049f4a3efa700bce8', // Orbiter Finance Maker 2
+  '0x41d3d33156ae7c62c094aae2995003ae63f587b3', // Orbiter Finance Maker 3
+  '0xd7aa9ba6caac7b0436c91396f22ca5a7f31664fc', // Orbiter Finance Maker (Base)
+  '0x095d2918b03b2e86d68551dcf11302121fb626c9', // Orbiter Finance Router
+  // User-verified wallets
+  '0x39ae06382656e045d320b3a3f8d9515e6d10f53a', // User-confirmed legitimate wallet
 ]);
 
 export function isKnownDrainer(address: string): boolean {

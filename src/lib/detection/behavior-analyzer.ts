@@ -180,6 +180,12 @@ const BRIDGE_CONTRACTS = new Set([
   '0xabea9132b05a70803a4e85094fd0e1800777fbef', // zkSync Lite
   '0x40ec5b33f54e0e8a33a975908c5ba1c14e5bbbdf', // Polygon Bridge
   '0xa0c68c638235ee32657e8f720a23cec1bfc77c77', // Polygon ERC20 Bridge
+  // Orbiter Finance Bridge (uses Maker EOA addresses)
+  '0x80c67432656d59144ceff962e8faf8926599bcf8', // Orbiter Finance Maker 1
+  '0xe4edb277e41dc89ab076a1f049f4a3efa700bce8', // Orbiter Finance Maker 2
+  '0x41d3d33156ae7c62c094aae2995003ae63f587b3', // Orbiter Finance Maker 3
+  '0xd7aa9ba6caac7b0436c91396f22ca5a7f31664fc', // Orbiter Finance Maker (Base)
+  '0x095d2918b03b2e86d68551dcf11302121fb626c9', // Orbiter Finance Router
 ]);
 
 const EXCHANGE_HOT_WALLETS = new Set([
