@@ -16,7 +16,9 @@ export const DRAINER_CONTRACTS: string[] = [
   // ============================================
   // PINK DRAINER FAMILY - CONFIRMED MALICIOUS
   // ============================================
-  '0x00005ea00ac477b1030ce78506496e8c2de24bf5',
+  // NOTE: 0x00005ea00ac477b1030ce78506496e8c2de24bf5 was INCORRECTLY listed here.
+  // That address is OpenSea SeaDrop - a LEGITIMATE NFT drop mechanism!
+  // It has been REMOVED from this list to fix false positives.
   '0x0000d194a19e7578e1ee97a2b6f6e4af01a00000',
   
   // ============================================
@@ -51,7 +53,7 @@ export const DRAINER_RECIPIENTS: string[] = [
   // ============================================
   // PINK DRAINER RECIPIENTS - CONFIRMED
   // ============================================
-  '0x00005ea00ac477b1030ce78506496e8c2de24bf5',
+  // NOTE: 0x00005ea00ac477b1030ce78506496e8c2de24bf5 REMOVED - it's OpenSea SeaDrop!
   '0x6d2e03b7effeae98bd302a9f836d0d6ab0002219',
   
   // ============================================
@@ -88,6 +90,7 @@ export const DRAINER_RECIPIENTS: string[] = [
 // ============================================
 const EXPLICIT_WHITELIST = new Set([
   '0x24cea16d97f61d0882481544f33fa5a8763991a6', // Union Authena (Base)
+  '0x00005ea00ac477b1030ce78506496e8c2de24bf5', // OpenSea SeaDrop - LEGITIMATE NFT drop mechanism
 ]);
 
 export function isKnownDrainer(address: string): boolean {
@@ -111,7 +114,8 @@ export function getDrainerType(address: string): string | null {
   
   // Check specific patterns in the address
   if (normalized.includes('db5c8b030ae20308ac975898e09741e7')) return 'Inferno Drainer';
-  if (normalized.includes('5ea00ac477b1030ce78506496e8c2de2')) return 'Pink Drainer';
+  // REMOVED: 5ea00ac477b1030ce78506496e8c2de2 pattern - this matched OpenSea SeaDrop!
+  // if (normalized.includes('5ea00ac477b1030ce78506496e8c2de2')) return 'Pink Drainer';
   if (normalized.includes('ae347930bd1e7b0f35588b92280f9e75')) return 'Angel Drainer';
   if (normalized.includes('35634b55f3d99b071b5a354f48e1')) return 'Monkey Drainer';
   if (normalized.includes('52e7f0c029b6e38e96f03c70d86bfde5')) return 'Venom Drainer';

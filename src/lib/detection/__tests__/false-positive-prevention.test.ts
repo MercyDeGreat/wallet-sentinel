@@ -160,8 +160,10 @@ describe('Infrastructure Protection: DEX routers can NEVER be sweeper/drainer', 
 });
 
 describe('Infrastructure Protection: Known drainers are NOT protected', () => {
+  // NOTE: 0x00005ea00ac477b1030ce78506496e8c2de24bf5 was INCORRECTLY flagged as "Pink Drainer"
+  // That address is OpenSea SeaDrop - LEGITIMATE! Using actual Pink Drainer V2 instead.
   const KNOWN_DRAINERS = [
-    '0x00005ea00ac477b1030ce78506496e8c2de24bf5', // Pink Drainer
+    '0x0000d194a19e7578e1ee97a2b6f6e4af01a00000', // Pink Drainer V2 (actual)
     '0x0000db5c8b030ae20308ac975898e09741e70000', // Inferno Drainer
   ];
 
@@ -191,6 +193,44 @@ describe('Infrastructure Protection: All protected addresses are in registry', (
       expect(result.canBeSweeperBot).toBe(false);
       expect(result.canBeDrainer).toBe(false);
     }
+  });
+});
+
+// ============================================
+// CRITICAL REGRESSION TEST: OpenSea SeaDrop → LEGITIMATE
+// ============================================
+// 0x00005ea00ac477b1030ce78506496e8c2de24bf5 was INCORRECTLY flagged as "Pink Drainer"
+// This test ensures it's correctly identified as OpenSea SeaDrop (legitimate).
+
+describe('Regression: OpenSea SeaDrop must NEVER be flagged as malicious', () => {
+  const SEADROP_ADDRESS = '0x00005ea00ac477b1030ce78506496e8c2de24bf5';
+
+  test('SeaDrop is a safe contract (NFT_MARKETPLACE)', () => {
+    const safeContract = isSafeContract(SEADROP_ADDRESS);
+    expect(safeContract).not.toBeNull();
+    expect(safeContract?.category).toBe('NFT_MARKETPLACE');
+    expect(safeContract?.name).toContain('SeaDrop');
+  });
+
+  test('SeaDrop is NOT flagged as malicious', () => {
+    expect(isMaliciousAddress(SEADROP_ADDRESS, 'ethereum')).toBeNull();
+    expect(isMaliciousAddress(SEADROP_ADDRESS, 'base')).toBeNull();
+    expect(isMaliciousAddress(SEADROP_ADDRESS, 'bnb')).toBeNull();
+  });
+
+  test('SeaDrop is NOT a drainer recipient', () => {
+    expect(isDrainerRecipient(SEADROP_ADDRESS)).toBe(false);
+  });
+
+  test('SeaDrop is NOT a known drainer', () => {
+    expect(isKnownDrainer(SEADROP_ADDRESS)).toBe(false);
+  });
+
+  test('SeaDrop is protected infrastructure (OpenSea)', () => {
+    const result = checkInfrastructureProtection(SEADROP_ADDRESS, 'ethereum');
+    expect(result.isProtected).toBe(true);
+    expect(result.canBeSweeperBot).toBe(false);
+    expect(result.canBeDrainer).toBe(false);
   });
 });
 
@@ -348,9 +388,11 @@ describe('Regression: Standard EIP approvals are NORMAL behavior', () => {
 // ============================================
 
 describe('Regression: Known drainer wallets must be FLAGGED', () => {
+  // NOTE: 0x00005ea00ac477b1030ce78506496e8c2de24bf5 is OpenSea SeaDrop - LEGITIMATE!
+  // Using actual Pink Drainer V2 address instead.
   const KNOWN_DRAINERS = [
     { address: '0x0000db5c8b030ae20308ac975898e09741e70000', name: 'Inferno Drainer' },
-    { address: '0x00005ea00ac477b1030ce78506496e8c2de24bf5', name: 'Pink Drainer' },
+    { address: '0x0000d194a19e7578e1ee97a2b6f6e4af01a00000', name: 'Pink Drainer V2' },
     { address: '0x00000000ae347930bd1e7b0f35588b92280f9e75', name: 'Angel Drainer' },
     { address: '0x0000000035634b55f3d99b071b5a354f48e10000', name: 'Monkey Drainer' },
     { address: '0x0000000052e7f0c029b6e38e96f03c70d86bfde5', name: 'Venom Drainer' },

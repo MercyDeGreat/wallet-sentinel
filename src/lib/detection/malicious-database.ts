@@ -39,16 +39,9 @@ export const KNOWN_MALICIOUS_CONTRACTS: MaliciousContract[] = [
     confirmationLevel: 'CONFIRMED',
   },
   
-  // Pink Drainer
-  {
-    address: '0x00005ea00ac477b1030ce78506496e8c2de24bf5',
-    chain: 'ethereum',
-    type: 'WALLET_DRAINER',
-    name: 'Pink Drainer',
-    reportedAt: '2023-06-01T00:00:00Z',
-    confirmationLevel: 'CONFIRMED',
-    affectedUsers: 50000,
-  },
+  // NOTE: 0x00005ea00ac477b1030ce78506496e8c2de24bf5 was INCORRECTLY listed as "Pink Drainer"
+  // That address is actually OpenSea SeaDrop - a LEGITIMATE NFT minting mechanism!
+  // It has been REMOVED to fix false positives.
   {
     address: '0x0000d194a19e7578e1ee97a2b6f6e4af01a00000',
     chain: 'ethereum',
@@ -136,14 +129,7 @@ export const KNOWN_MALICIOUS_CONTRACTS: MaliciousContract[] = [
     reportedAt: '2023-08-01T00:00:00Z',
     confirmationLevel: 'CONFIRMED',
   },
-  {
-    address: '0x00005ea00ac477b1030ce78506496e8c2de24bf5',
-    chain: 'base',
-    type: 'WALLET_DRAINER',
-    name: 'Pink Drainer (Base)',
-    reportedAt: '2023-09-01T00:00:00Z',
-    confirmationLevel: 'CONFIRMED',
-  },
+  // NOTE: OpenSea SeaDrop 0x00005ea... was incorrectly listed here - REMOVED
   
   // ============================================
   // BNB CHAIN DRAINERS
@@ -156,14 +142,7 @@ export const KNOWN_MALICIOUS_CONTRACTS: MaliciousContract[] = [
     reportedAt: '2023-06-01T00:00:00Z',
     confirmationLevel: 'CONFIRMED',
   },
-  {
-    address: '0x00005ea00ac477b1030ce78506496e8c2de24bf5',
-    chain: 'bnb',
-    type: 'WALLET_DRAINER',
-    name: 'Pink Drainer (BSC)',
-    reportedAt: '2023-08-01T00:00:00Z',
-    confirmationLevel: 'CONFIRMED',
-  },
+  // NOTE: OpenSea SeaDrop 0x00005ea... was incorrectly listed here - REMOVED
 ];
 
 // ============================================
@@ -178,7 +157,7 @@ export const KNOWN_DRAINER_RECIPIENTS: string[] = [
   '0xaefc6e27b7a73e7c4f1a5c2e7a9a5b5c3d1e0f00',
   
   // Pink Drainer wallets
-  '0x00005ea00ac477b1030ce78506496e8c2de24bf5',
+  // NOTE: 0x00005ea... REMOVED - it's OpenSea SeaDrop (legitimate)
   '0x6d2e03b7effeae98bd302a9f836d0d6ab0002219',
   
   // Angel Drainer wallets
@@ -416,6 +395,7 @@ export const CHAIN_RPC_CONFIG: Record<string, {
 // These contract addresses are MANUALLY VERIFIED and should NEVER be flagged
 const EXPLICIT_WHITELIST = new Set([
   '0x24cea16d97f61d0882481544f33fa5a8763991a6', // Union Authena (Base)
+  '0x00005ea00ac477b1030ce78506496e8c2de24bf5', // OpenSea SeaDrop - LEGITIMATE NFT minting
 ]);
 
 export function isMaliciousAddress(address: string, chain: string): MaliciousContract | null {
@@ -602,6 +582,11 @@ export const KNOWN_LEGITIMATE_CONTRACTS: Record<string, string> = {
   '0x0000000000000068f116a894984e2db1123eb395': 'OpenSea Seaport 1.5',
   '0x00000000000001ad428e4906ae43d8f9852d0dd6': 'Seaport 1.6',
   '0x1e0049783f008a0085193e00003d00cd54003c71': 'OpenSea Fee Collector',
+  // ============================================
+  // OPENSEA SEADROP (NFT DROP MECHANISM) - LEGITIMATE!
+  // ============================================
+  // CRITICAL: SeaDrop is OpenSea's NFT minting mechanism - NOT a drainer!
+  '0x00005ea00ac477b1030ce78506496e8c2de24bf5': 'OpenSea SeaDrop',
   
   // ============================================
   // 0x PROTOCOL

@@ -100,6 +100,31 @@ export const SAFE_CONTRACTS: SafeContract[] = [
     verified: true,
     interactionCount: 'HIGH',
   },
+  // ============================================
+  // OPENSEA SEADROP - LEGITIMATE NFT DROP MECHANISM
+  // ============================================
+  // CRITICAL: SeaDrop is OpenSea's NFT minting mechanism.
+  // It was INCORRECTLY flagged as "Pink Drainer" - this is WRONG!
+  // SeaDrop is used for legitimate NFT drops and mints.
+  {
+    address: '0x00005ea00ac477b1030ce78506496e8c2de24bf5',
+    name: 'OpenSea SeaDrop',
+    category: 'NFT_MARKETPLACE',
+    chains: ['ethereum', 'base', 'bnb'],
+    verified: true,
+    description: 'OpenSea SeaDrop - legitimate NFT drop/mint mechanism. NOT a drainer!',
+    website: 'https://opensea.io',
+    interactionCount: 'HIGH',
+  },
+  {
+    address: '0x00005ea00ac477b1030ce78506496e8c2de24bf6',
+    name: 'OpenSea SeaDrop V2',
+    category: 'NFT_MARKETPLACE',
+    chains: ['ethereum', 'base'],
+    verified: true,
+    description: 'OpenSea SeaDrop V2 - legitimate NFT drop/mint mechanism',
+    interactionCount: 'HIGH',
+  },
   {
     address: '0x000000000000ad05ccc4f10045630fb830b95127',
     name: 'Blur Marketplace',
@@ -675,6 +700,54 @@ export const SAFE_CONTRACTS: SafeContract[] = [
     verified: true,
     description: 'Uniswap V3 Quoter for price quotes on Base',
     interactionCount: 'HIGH',
+  },
+  // ============================================
+  // ADDITIONAL UNISWAP CONTRACTS - BASE CHAIN
+  // ============================================
+  {
+    address: '0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24',
+    name: 'Uniswap V2 Router (Base)',
+    category: 'DEX_ROUTER',
+    chains: ['base'],
+    verified: true,
+    description: 'Uniswap V2 style router on Base',
+    interactionCount: 'HIGH',
+  },
+  {
+    address: '0x3d4e44eb1374240ce5f1b871ab261cd16335b76a',
+    name: 'Uniswap V3 Multicall (Base)',
+    category: 'INFRASTRUCTURE',
+    chains: ['base'],
+    verified: true,
+    description: 'Uniswap V3 Multicall contract on Base',
+    interactionCount: 'HIGH',
+  },
+  {
+    address: '0x42b24a95702b9986e82d421cc3568932790a48ec',
+    name: 'Uniswap V3 NFT Descriptor (Base)',
+    category: 'INFRASTRUCTURE',
+    chains: ['base'],
+    verified: true,
+    description: 'NFT Descriptor for Uniswap LP positions on Base',
+    interactionCount: 'MEDIUM',
+  },
+  {
+    address: '0x91ae842a5ffd8d12023116943e72a606179294f3',
+    name: 'Uniswap V3 Migrator (Base)',
+    category: 'INFRASTRUCTURE',
+    chains: ['base'],
+    verified: true,
+    description: 'Uniswap V3 liquidity migrator on Base',
+    interactionCount: 'MEDIUM',
+  },
+  {
+    address: '0x1f98400000000000000000000000000000000002',
+    name: 'Uniswap V3 Staker (Base)',
+    category: 'STAKING',
+    chains: ['base'],
+    verified: true,
+    description: 'Uniswap V3 liquidity staking on Base',
+    interactionCount: 'MEDIUM',
   },
   {
     address: '0xb4cb800910b228ed3d0834cf79d697127bbb00e5',

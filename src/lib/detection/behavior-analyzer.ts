@@ -221,6 +221,7 @@ const NFT_MARKETPLACES = new Set([
   '0x00000000006c3852cbef3e08e8df289169ede581', // OpenSea Seaport 1.4
   '0x0000000000000068f116a894984e2db1123eb395', // OpenSea Seaport 1.5
   '0x00000000000001ad428e4906ae43d8f9852d0dd6', // Seaport 1.6
+  '0x00005ea00ac477b1030ce78506496e8c2de24bf5', // OpenSea SeaDrop - LEGITIMATE NFT drops!
   '0x000000000000ad05ccc4f10045630fb830b95127', // Blur
   '0xb2ecfe4e4d61f8790bbb9de2d1259b9e2410cea5', // Blur Exchange
   '0x59728544b08ab483533076417fbbb2fd0b17ce3a', // LooksRare

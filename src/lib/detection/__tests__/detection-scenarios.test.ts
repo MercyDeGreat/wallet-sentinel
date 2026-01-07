@@ -56,10 +56,12 @@ describe('Scenario A: Known Drainer Wallet', () => {
 describe('Scenario B: Victim Wallet', () => {
   // Mock victim scenario:
   // User approved Pink Drainer, then got drained
+  // NOTE: 0x00005ea00ac477b1030ce78506496e8c2de24bf5 is OpenSea SeaDrop (LEGITIMATE!)
+  // Using actual Pink Drainer V2 address for this test
   const VICTIM_ADDRESS = '0x1234567890123456789012345678901234567890';
-  const PINK_DRAINER = '0x00005ea00ac477b1030ce78506496e8c2de24bf5';
+  const PINK_DRAINER = '0x0000d194a19e7578e1ee97a2b6f6e4af01a00000'; // Pink Drainer V2 (actual)
   
-  test('Pink Drainer is flagged as malicious', () => {
+  test('Pink Drainer V2 is flagged as malicious', () => {
     const result = isMaliciousAddress(PINK_DRAINER, 'ethereum');
     expect(result).not.toBeNull();
     expect(result?.type).toBe('WALLET_DRAINER');

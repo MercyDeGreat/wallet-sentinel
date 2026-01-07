@@ -619,10 +619,25 @@ function isOpenSeaVanityAddress(address: string): boolean {
   const normalized = address.toLowerCase();
   
   // OpenSea Seaport contracts all start with 0x00000000
-  if (normalized.startsWith('0x00000000')) {
+  if (normalized.startsWith('0x00000000') || normalized.startsWith('0x00005ea')) {
+    // Known legitimate OpenSea/Seaport patterns
+    // CRITICAL: 0x00005ea00ac477b1030ce78506496e8c2de24bf5 is OpenSea SeaDrop - LEGITIMATE!
+    const seaportPatterns = [
+      '0x00000000000000adc04c56bf30ac9d3c0aaf14dc', // Seaport 1.1
+      '0x00000000006c3852cbef3e08e8df289169ede581', // Seaport 1.4
+      '0x0000000000000068f116a894984e2db1123eb395', // Seaport 1.5
+      '0x00000000000001ad428e4906ae43d8f9852d0dd6', // Seaport 1.6
+      '0x00000000f9490004c11cef243f5400493c00ad63', // Conduit
+      '0x00005ea00ac477b1030ce78506496e8c2de24bf5', // SeaDrop - LEGITIMATE NFT drop mechanism!
+    ];
+    
+    if (seaportPatterns.includes(normalized)) {
+      return true;
+    }
+    
     // Exclude known drainer addresses that also start with zeros
+    // NOTE: 0x00005ea... REMOVED - it's OpenSea SeaDrop (legitimate)!
     const knownDrainers = [
-      '0x00005ea00ac477b1030ce78506496e8c2de24bf5', // Pink Drainer
       '0x0000db5c8b030ae20308ac975898e09741e70000', // Inferno Drainer
       '0x00000000ae347930bd1e7b0f35588b92280f9e75', // Angel Drainer
       '0x0000000083fc54c35b9b83de16c67c73b1a7b000', // MS Drainer
@@ -631,19 +646,6 @@ function isOpenSeaVanityAddress(address: string): boolean {
     
     if (knownDrainers.includes(normalized)) {
       return false; // This is a drainer, not OpenSea
-    }
-    
-    // Additional check: legitimate Seaport has specific patterns
-    const seaportPatterns = [
-      '0x00000000000000adc04c56bf30ac9d3c0aaf14dc', // Seaport 1.1
-      '0x00000000006c3852cbef3e08e8df289169ede581', // Seaport 1.4
-      '0x0000000000000068f116a894984e2db1123eb395', // Seaport 1.5
-      '0x00000000000001ad428e4906ae43d8f9852d0dd6', // Seaport 1.6
-      '0x00000000f9490004c11cef243f5400493c00ad63', // Conduit
-    ];
-    
-    if (seaportPatterns.includes(normalized)) {
-      return true;
     }
     
     // For other 0x00000000 addresses, be more careful

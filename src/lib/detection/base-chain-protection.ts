@@ -82,6 +82,9 @@ export const BASE_NFT_PLATFORMS: Map<string, { name: string; type: string }> = n
   // OpenSea on Base
   ['0x00000000000000adc04c56bf30ac9d3c0aaf14dc', { name: 'Seaport 1.5', type: 'NFT_MARKETPLACE' }],
   ['0x0000000000000068f116a894984e2db1123eb395', { name: 'Seaport 1.6', type: 'NFT_MARKETPLACE' }],
+  // CRITICAL: OpenSea SeaDrop - LEGITIMATE NFT drop/mint mechanism!
+  // This was INCORRECTLY flagged as "Pink Drainer" - FIXED!
+  ['0x00005ea00ac477b1030ce78506496e8c2de24bf5', { name: 'OpenSea SeaDrop', type: 'NFT_PLATFORM' }],
   
   // Highlight.xyz (popular Base NFT platform)
   ['0x8087039152c472fa74f47398628ff002994056ea', { name: 'Highlight Factory', type: 'NFT_PLATFORM' }],
