@@ -136,6 +136,13 @@ export type SolanaSignalType =
   | 'KNOWN_MALICIOUS_INTERACTION'    // Interaction with known drainer addresses
   | 'AUTOMATION_SIGNATURE'           // Consistent compute/timing patterns
   
+  // Solana-specific drainer signals (CRITICAL for accurate detection)
+  | 'UNAUTHORIZED_DELEGATION_CHANGE' // Token account delegation changed without user consent
+  | 'MALICIOUS_SET_AUTHORITY'        // SetAuthority instruction that transfers control
+  | 'PDA_DRAIN_PATTERN'              // Token transfers via malicious PDAs
+  | 'SPL_TOKEN_ACCOUNT_TAKEOVER'     // Account authority changed to attacker
+  | 'SUSPICIOUS_PROGRAM_INVOCATION'  // Unknown program draining SPL tokens
+  
   // Sweeper signals
   | 'IMMEDIATE_AUTOMATED_TRANSFER'   // Transfer within seconds of inbound
   | 'IDENTICAL_DESTINATION_PATTERN'  // Same dest across multiple wallets
@@ -144,7 +151,7 @@ export type SolanaSignalType =
   
   // Historical signals
   | 'PAST_DRAIN_ACTIVITY'            // Historical drain detected but now inactive
-  | 'REVOKED_DELEGATION'             // Previously malicious delegation was revoked;
+  | 'REVOKED_DELEGATION';            // Previously malicious delegation was revoked
 
 // ============================================
 // SOLANA PROGRAM WHITELISTS
@@ -324,6 +331,29 @@ export const SOLANA_WALLET_PROGRAMS = new Set([
   'DjVE6JNiYqPL2QXyCUUh8rNjHrbz9hXHNYt99MQ59qw1',   // Phantom
 ]);
 
+// ============================================
+// SOLANA NAMING SERVICES (NEVER FLAG)
+// ============================================
+// CRITICAL: Name service transactions are ALWAYS legitimate
+// They represent identity/domain registration, NOT drainer activity
+export const SOLANA_NAMING_PROGRAMS = new Set([
+  // Solana Name Service (SNS / .sol domains) - MAIN
+  'namesLPneVptA9Z5rqUDD9tMTWEJwofgaYwp8cawRkX',   // SNS Registrar
+  'SNSNkV9zfG5ZKWQs6x4hxvBRV6s8SqMfSGCtECDvdMd',  // SNS Controller
+  'jCebN34bUfdeUYJT13J1yG16XWQpt5PDx6Mse9GUqhR',  // SNS Auction
+  '58PwtjSDuFHuUkYjH9BYnnQKHfwo9reZhC2zMJv9JPkx', // Bonfida SNS Program
+  'BdTfhPMxQKRQ94aBU9mUCKVk1rEQfLoNAAYjnBpQ2FCs', // SNS Name Tokenizer
+  
+  // AllDomains (Solana multi-TLD naming)
+  'ALLnLqT5gfuziZPe1rLxVmHHmLhP8nCZKuqQJmgMFmHG', // AllDomains Registry
+  
+  // Backpack/xNFT names
+  'xnft5aaToUM4UFETUQfj7NUDUBdvYHTVhNFThEYTm55',  // xNFT Program
+  
+  // Domain tokenization
+  'wns1gDLt8fgLcGhWi5MqAqgXpwEP1JftKE9eZnXS1HM',  // Wormhole Name Service
+]);
+
 // All whitelisted programs combined
 export const ALL_WHITELISTED_PROGRAMS = new Set([
   ...SOLANA_SYSTEM_PROGRAMS,
@@ -332,6 +362,7 @@ export const ALL_WHITELISTED_PROGRAMS = new Set([
   ...SOLANA_DEFI_PROGRAMS,
   ...SOLANA_STAKING_PROGRAMS,
   ...SOLANA_WALLET_PROGRAMS,
+  ...SOLANA_NAMING_PROGRAMS,
 ]);
 
 // ============================================
@@ -539,6 +570,44 @@ export function detectDrainerBehavior(
   const launderingSignal = detectLaunderingPatterns(sortedTxs, walletAddress);
   if (launderingSignal) {
     signals.push(launderingSignal);
+  }
+  
+  // ============================================
+  // SIGNAL 6: Unauthorized Delegation (Solana-specific)
+  // ============================================
+  const delegationSignal = detectUnauthorizedDelegation(sortedTxs, walletAddress);
+  if (delegationSignal) {
+    signals.push(delegationSignal);
+    if (delegationSignal.timestamp && (!lastActivityTimestamp || delegationSignal.timestamp > lastActivityTimestamp)) {
+      lastActivityTimestamp = delegationSignal.timestamp;
+    }
+  }
+  
+  // ============================================
+  // SIGNAL 7: Malicious SetAuthority (Solana-specific)
+  // ============================================
+  const setAuthoritySignal = detectMaliciousSetAuthority(sortedTxs, walletAddress);
+  if (setAuthoritySignal) {
+    signals.push(setAuthoritySignal);
+    if (setAuthoritySignal.timestamp && (!lastActivityTimestamp || setAuthoritySignal.timestamp > lastActivityTimestamp)) {
+      lastActivityTimestamp = setAuthoritySignal.timestamp;
+    }
+  }
+  
+  // ============================================
+  // SIGNAL 8: PDA Drain Pattern (Solana-specific)
+  // ============================================
+  const pdaDrainSignal = detectPDADrainPattern(sortedTxs, walletAddress);
+  if (pdaDrainSignal) {
+    signals.push(pdaDrainSignal);
+  }
+  
+  // ============================================
+  // SIGNAL 9: Suspicious Program Invocation (Solana-specific)
+  // ============================================
+  const suspiciousProgramSignal = detectSuspiciousProgramInvocation(sortedTxs, walletAddress);
+  if (suspiciousProgramSignal) {
+    signals.push(suspiciousProgramSignal);
   }
   
   // ============================================
@@ -1046,6 +1115,44 @@ export interface SolanaTransactionData {
   isSelfTransfer?: boolean;
   // Value in USD (if available) for one-off large transfer detection
   valueUSD?: number;
+  
+  // ============================================
+  // SOLANA-SPECIFIC DRAINER DETECTION FIELDS
+  // ============================================
+  // These enable accurate detection of Solana-specific attacks
+  
+  // SetAuthority detection - critical for delegation abuse
+  hasSetAuthority?: boolean;
+  setAuthorityType?: 'MintTokens' | 'FreezeAccount' | 'AccountOwner' | 'CloseAccount';
+  newAuthority?: string;
+  previousAuthority?: string;
+  
+  // Token account delegation
+  hasDelegation?: boolean;
+  delegateAddress?: string;
+  delegatedAmount?: number;
+  
+  // PDA interactions for drain detection
+  involvesPDA?: boolean;
+  pdaAddress?: string;
+  pdaSeed?: string;
+  
+  // Program invocation details
+  innerInstructions?: {
+    programId: string;
+    data?: string;
+  }[];
+  
+  // Token account state changes
+  tokenAccountChanges?: {
+    account: string;
+    preBalance: number;
+    postBalance: number;
+    mint: string;
+  }[];
+  
+  // Naming service interaction (NEVER flag as malicious)
+  isNamingServiceInteraction?: boolean;
 }
 
 // ============================================
@@ -1160,6 +1267,7 @@ function filterFalsePositives(
     marketplaceEscrow: number;
     selfTransfers: number;
     oneOffLarge: number;
+    namingService: number;
   };
 } {
   const excluded = {
@@ -1168,6 +1276,7 @@ function filterFalsePositives(
     marketplaceEscrow: 0,
     selfTransfers: 0,
     oneOffLarge: 0,
+    namingService: 0,
   };
   
   const filtered = transactions.filter(tx => {
@@ -1192,6 +1301,13 @@ function filterFalsePositives(
     // Check for one-off large transfers
     if (isOneOffLargeTransfer(tx, transactions, walletAddress)) {
       excluded.oneOffLarge++;
+      return false;
+    }
+    
+    // CRITICAL: Naming service interactions are ALWAYS legitimate
+    // .sol domains, SNS, AllDomains, etc.
+    if (isNamingServiceActivity(tx)) {
+      excluded.namingService++;
       return false;
     }
     
@@ -1428,6 +1544,258 @@ function detectLaunderingPatterns(
   // This is a more complex check that would need amount data
   
   return null;
+}
+
+// ============================================
+// SOLANA-SPECIFIC DRAINER DETECTION FUNCTIONS
+// ============================================
+// These detect Solana-unique attack vectors:
+// - Unauthorized delegation changes
+// - Malicious SetAuthority instructions
+// - PDA drain patterns
+// - SPL token account takeovers
+
+/**
+ * Detect unauthorized token account delegation changes.
+ * 
+ * Drainers often:
+ * 1. Get user to sign a tx that delegates their token account
+ * 2. Use delegation to transfer tokens without further user consent
+ * 
+ * SIGNAL: Delegation to unknown address followed by token drain
+ */
+function detectUnauthorizedDelegation(
+  transactions: SolanaTransactionData[],
+  walletAddress: string
+): DetectedSignal | null {
+  // Find transactions with delegation changes
+  const delegationTxs = transactions.filter(tx => tx.hasDelegation && tx.delegateAddress);
+  
+  if (delegationTxs.length === 0) return null;
+  
+  // Check if any delegation was followed by token drain
+  for (const delegationTx of delegationTxs) {
+    const delegateAddr = delegationTx.delegateAddress!;
+    const delegationTime = delegationTx.timestamp || 0;
+    
+    // Skip if delegate is a known safe program
+    if (isWhitelistedProgram(delegateAddr)) continue;
+    
+    // Look for subsequent drains
+    const drainsAfterDelegation = transactions.filter(tx => 
+      tx.isOutbound &&
+      tx.isSPLTransfer &&
+      (tx.timestamp || 0) > delegationTime &&
+      (tx.timestamp || 0) - delegationTime < 3600 // Within 1 hour
+    );
+    
+    if (drainsAfterDelegation.length > 0) {
+      return {
+        type: 'UNAUTHORIZED_DELEGATION_CHANGE',
+        confidence: 'HIGH',
+        description: `Token account delegated to ${delegateAddr.slice(0, 8)}... followed by ${drainsAfterDelegation.length} drain(s)`,
+        timestamp: delegationTime,
+        relatedAddresses: [delegateAddr],
+        relatedTxSignatures: [
+          delegationTx.signature,
+          ...drainsAfterDelegation.map(tx => tx.signature),
+        ],
+      };
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Detect malicious SetAuthority instructions.
+ * 
+ * Attackers use SetAuthority to:
+ * 1. Change token account owner to attacker
+ * 2. Transfer freeze authority to prevent recovery
+ * 3. Take over mint authority for rug pulls
+ * 
+ * SIGNAL: Authority changed to non-whitelisted address + subsequent drains
+ */
+function detectMaliciousSetAuthority(
+  transactions: SolanaTransactionData[],
+  walletAddress: string
+): DetectedSignal | null {
+  const setAuthorityTxs = transactions.filter(tx => 
+    tx.hasSetAuthority && 
+    tx.newAuthority &&
+    tx.newAuthority !== walletAddress // Authority transferred away from user
+  );
+  
+  if (setAuthorityTxs.length === 0) return null;
+  
+  for (const authTx of setAuthorityTxs) {
+    const newAuth = authTx.newAuthority!;
+    
+    // Skip if new authority is a known safe program
+    if (isWhitelistedProgram(newAuth)) continue;
+    
+    // Check for token balance changes after authority change
+    const authorityChangeTime = authTx.timestamp || 0;
+    const drainAfterAuthChange = transactions.filter(tx =>
+      tx.isOutbound &&
+      (tx.isSPLTransfer || tx.isSOLTransfer) &&
+      (tx.timestamp || 0) > authorityChangeTime
+    );
+    
+    if (drainAfterAuthChange.length > 0) {
+      const totalDrained = drainAfterAuthChange.reduce((sum, tx) => sum + (tx.lamports || 0), 0);
+      
+      return {
+        type: 'MALICIOUS_SET_AUTHORITY',
+        confidence: 'HIGH',
+        description: `${authTx.setAuthorityType || 'Account'} authority transferred to ${newAuth.slice(0, 8)}... ` +
+                     `followed by ${drainAfterAuthChange.length} drain(s) (${(totalDrained / 1e9).toFixed(4)} SOL)`,
+        timestamp: authorityChangeTime,
+        relatedAddresses: [newAuth, authTx.previousAuthority || ''].filter(Boolean),
+        relatedTxSignatures: [authTx.signature, ...drainAfterAuthChange.map(tx => tx.signature)],
+      };
+    }
+    
+    // Even without subsequent drain, authority change to unknown is suspicious
+    return {
+      type: 'MALICIOUS_SET_AUTHORITY',
+      confidence: 'MEDIUM',
+      description: `${authTx.setAuthorityType || 'Account'} authority transferred to unknown address ${newAuth.slice(0, 8)}...`,
+      timestamp: authorityChangeTime,
+      relatedAddresses: [newAuth],
+      relatedTxSignatures: [authTx.signature],
+    };
+  }
+  
+  return null;
+}
+
+/**
+ * Detect PDA-based drain patterns.
+ * 
+ * Malicious programs use PDAs to:
+ * 1. Create seemingly legitimate signing authority
+ * 2. Drain tokens through PDA-controlled accounts
+ * 3. Obfuscate the actual attacker address
+ * 
+ * SIGNAL: Tokens transferred via non-whitelisted program's PDA
+ */
+function detectPDADrainPattern(
+  transactions: SolanaTransactionData[],
+  walletAddress: string
+): DetectedSignal | null {
+  const pdaTxs = transactions.filter(tx => 
+    tx.involvesPDA && 
+    tx.pdaAddress &&
+    tx.isOutbound &&
+    (tx.isSPLTransfer || tx.isSOLTransfer)
+  );
+  
+  if (pdaTxs.length < 2) return null; // Need multiple for pattern
+  
+  // Group by PDA address
+  const pdaGroups = new Map<string, SolanaTransactionData[]>();
+  for (const tx of pdaTxs) {
+    const pda = tx.pdaAddress!;
+    if (!pdaGroups.has(pda)) {
+      pdaGroups.set(pda, []);
+    }
+    pdaGroups.get(pda)!.push(tx);
+  }
+  
+  // Check for suspicious PDA patterns
+  for (const [pda, txs] of pdaGroups) {
+    // Get the controlling program
+    const controllingPrograms = new Set(txs.flatMap(tx => tx.programIds || []));
+    
+    // Check if any controlling program is NOT whitelisted
+    const nonWhitelistedPrograms = [...controllingPrograms].filter(p => !isWhitelistedProgram(p));
+    
+    if (nonWhitelistedPrograms.length > 0 && txs.length >= 2) {
+      const totalDrained = txs.reduce((sum, tx) => sum + (tx.lamports || 0), 0);
+      
+      return {
+        type: 'PDA_DRAIN_PATTERN',
+        confidence: 'HIGH',
+        description: `${txs.length} drain transactions via PDA ${pda.slice(0, 8)}... ` +
+                     `controlled by unknown program(s): ${nonWhitelistedPrograms.map(p => p.slice(0, 8)).join(', ')}`,
+        timestamp: txs[0].timestamp,
+        relatedAddresses: [pda, ...nonWhitelistedPrograms],
+        relatedTxSignatures: txs.map(tx => tx.signature),
+      };
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Detect suspicious program invocations draining SPL tokens.
+ * 
+ * Looks for:
+ * 1. Unknown programs invoking token transfers
+ * 2. Programs with unusual instruction patterns
+ * 3. Programs that appear only during drain activity
+ */
+function detectSuspiciousProgramInvocation(
+  transactions: SolanaTransactionData[],
+  walletAddress: string
+): DetectedSignal | null {
+  // Find transactions where tokens left the wallet
+  const drainTxs = transactions.filter(tx => 
+    tx.isOutbound && 
+    (tx.isSPLTransfer || tx.isSOLTransfer) &&
+    tx.innerInstructions && 
+    tx.innerInstructions.length > 0
+  );
+  
+  if (drainTxs.length === 0) return null;
+  
+  // Check each drain for suspicious program invocations
+  const suspiciousPrograms = new Map<string, number>();
+  
+  for (const tx of drainTxs) {
+    for (const inner of (tx.innerInstructions || [])) {
+      // Skip whitelisted programs
+      if (isWhitelistedProgram(inner.programId)) continue;
+      
+      // Count invocations of unknown programs during drains
+      suspiciousPrograms.set(
+        inner.programId, 
+        (suspiciousPrograms.get(inner.programId) || 0) + 1
+      );
+    }
+  }
+  
+  // Flag if any unknown program was invoked multiple times during drains
+  for (const [programId, count] of suspiciousPrograms) {
+    if (count >= 2) {
+      return {
+        type: 'SUSPICIOUS_PROGRAM_INVOCATION',
+        confidence: 'MEDIUM',
+        description: `Unknown program ${programId.slice(0, 8)}... invoked ${count} times during token transfers. ` +
+                     `This may indicate a malicious drainer program.`,
+        relatedAddresses: [programId],
+        relatedTxSignatures: drainTxs.filter(tx => 
+          tx.innerInstructions?.some(i => i.programId === programId)
+        ).map(tx => tx.signature),
+      };
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Check if a transaction is a naming service interaction.
+ * Naming service transactions should NEVER be flagged as malicious.
+ */
+function isNamingServiceActivity(tx: SolanaTransactionData): boolean {
+  if (tx.isNamingServiceInteraction) return true;
+  
+  const programs = tx.programIds || [];
+  return programs.some(p => SOLANA_NAMING_PROGRAMS.has(p));
 }
 
 function generateDrainerExplanation(

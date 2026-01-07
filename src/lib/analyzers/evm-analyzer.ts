@@ -948,6 +948,7 @@ export class EVMAnalyzer {
     // HELPER: Check if destination is legitimate
     // ============================================
     const isLegitimateDestination = (address: string, methodId?: string): boolean => {
+      if (!address) return false;
       const normalized = address.toLowerCase();
       
       // CRITICAL: Check infrastructure protection FIRST
@@ -958,6 +959,7 @@ export class EVMAnalyzer {
       // ============================================
       // BASE CHAIN SPECIFIC PROTECTION
       // ============================================
+      // CRITICAL: ENS.base and NFT mints should NEVER increase risk
       if (this.chain === 'base') {
         // Check Base-specific protocols (ENS.base, bridges, etc.)
         const baseProtocol = checkBaseProtocolInteraction(normalized, methodId);
@@ -966,6 +968,12 @@ export class EVMAnalyzer {
         // Check if it's an exchange wallet
         const exchangeCheck = checkExchangeWallet(normalized);
         if (exchangeCheck.isExchange) return true;
+        
+        // EXPLICIT CHECK: ENS.base contracts
+        if (ENS_BASE_CONTRACTS.has(normalized)) return true;
+        
+        // EXPLICIT CHECK: Base bridge contracts
+        if (BASE_BRIDGE_CONTRACTS.has(normalized)) return true;
       }
       
       // Check safe contracts (comprehensive allowlist)
@@ -977,6 +985,9 @@ export class EVMAnalyzer {
       if (isInfrastructureContract(normalized)) return true;
       if (EXCHANGE_HOT_WALLETS.has(normalized)) return true;
       if (isLegitimateContract(normalized)) return true;
+      
+      // Check if this is a standard mint transaction (user paying for NFT)
+      if (methodId && isStandardMintMethod(methodId)) return true;
       
       // ============================================
       // NFT MINT DETECTION - ALWAYS LEGITIMATE
@@ -1092,8 +1103,22 @@ export class EVMAnalyzer {
     // ============================================
     // This MUST run BEFORE any early exits based on destination classification.
     // A sweeper bot sending to "exchange infrastructure" is STILL a sweeper bot!
+    //
+    // CRITICAL FIX: Exclude transactions TO legitimate protocols (ENS, NFT mints, DEXes)
+    // from behavioral analysis. These are user-initiated legitimate activities, NOT sweeps.
+    const filteredTransactionsForBehavior = transactions.filter(tx => {
+      if (!tx.to) return true;
+      // Exclude transactions TO legitimate destinations from sweep detection
+      const toLegitimate = isLegitimateDestination(tx.to, tx.methodId);
+      if (toLegitimate && tx.from.toLowerCase() === userAddress.toLowerCase()) {
+        // User SENDING to legitimate protocol = NOT a sweep, exclude from behavioral analysis
+        return false;
+      }
+      return true;
+    });
+    
     const behavioralAnalysis = analyzeBehavioralSweeperPattern(
-      transactions.map(tx => ({
+      filteredTransactionsForBehavior.map(tx => ({
         hash: tx.hash,
         from: tx.from,
         to: tx.to || '',

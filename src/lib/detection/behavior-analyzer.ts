@@ -21,7 +21,17 @@
 // CONFIDENCE THRESHOLD: Only show "Sweeper Bot" if confidence ≥ 0.85
 
 import { Chain, RiskLevel, WalletRole, AttackType, DetectedThreat } from '@/types';
-import { isSafeContract, SafeContract, isDEXRouterOnChain } from './safe-contracts';
+import { 
+  isSafeContract, 
+  SafeContract, 
+  isDEXRouterOnChain,
+  isENSContract,
+  isNFTMintContract,
+  isNFTMarketplace,
+  isDeFiProtocol,
+  isNamingServiceContract,
+  isStandardMintMethod,
+} from './safe-contracts';
 import { isKnownDrainer } from './drainer-addresses';
 import { isLegitimateContract } from './malicious-database';
 import { 
@@ -30,6 +40,12 @@ import {
   checkBaseDEXActivity,
   isNormalDEXActivityOnly,
 } from './infrastructure-protection';
+import {
+  isBaseNFTPlatform,
+  ENS_BASE_CONTRACTS,
+  BASE_BRIDGE_CONTRACTS,
+  checkBaseProtocolInteraction,
+} from './base-chain-protection';
 
 // ============================================
 // ENHANCED CLASSIFICATION TYPES
@@ -238,6 +254,35 @@ const MINT_SELECTORS = new Set([
   '0xd85d3d27', // mintTo(address)
   '0x0febdd49', // safeMint
   '0x731133e9', // mint(address,uint256,uint256,bytes) - ERC1155
+  // Additional NFT mint methods
+  '0x2db11544', // publicMint(uint256)
+  '0x84bb1e42', // mintPublic(uint256)
+  '0x14f710fe', // freeMint()
+  '0x32db7add', // mintBatch
+  '0x156e29f6', // mint(address,uint256,uint256)
+  '0x94d008ef', // mint(address,uint256,bytes)
+  '0x379607f5', // claim(uint256)
+  '0x4e71d92d', // claim()
+  '0xce7c2ac2', // claim(address)
+  '0xd37c353b', // claim (ThirdWeb)
+  '0xba41b0c6', // claimConditions (ThirdWeb)
+  '0x6871ee40', // purchase(uint256)
+  '0xefef39a1', // purchase()
+  '0x3c168eab', // mintWithComment
+  '0xfb7d4e5d', // mintFromZoraBuySell
+]);
+
+// ENS / Name service registration selectors
+const ENS_SELECTORS = new Set([
+  '0x8c6f3d39', // register(...)
+  '0xaeb8ce9b', // registerWithConfig(...)
+  '0x74694a2b', // renew(string,uint256)
+  '0xacf1a841', // renew(bytes32,uint256)
+  '0xc475abff', // renew(uint256,uint256)
+  '0xf1cb7e06', // commit(bytes32)
+  '0x1896f70a', // setResolver(bytes32,address)
+  '0xab0e64ca', // setName(string)
+  '0xd5fa2b00', // setAddr(bytes32,address)
 ]);
 
 const DEX_SWAP_SELECTORS = new Set([
@@ -445,7 +490,51 @@ function recognizeProtocol(address: string, chain?: Chain): { isKnown: boolean; 
   
   const normalized = address.toLowerCase();
   
-  // Check infrastructure protection first (highest priority)
+  // ============================================
+  // CRITICAL: Check ENS and NFT platforms FIRST
+  // These should ALWAYS be recognized as legitimate protocols
+  // ============================================
+  
+  // Check for ENS contracts on any chain
+  if (isENSContract(normalized)) {
+    return { isKnown: true, protocol: 'ENS', category: 'ENS' };
+  }
+  
+  // Check for naming service contracts (including Base names)
+  if (chain && isNamingServiceContract(normalized, chain)) {
+    return { isKnown: true, protocol: 'Naming Service', category: 'ENS' };
+  }
+  
+  // Check for ENS.base specifically
+  if (chain === 'base' && ENS_BASE_CONTRACTS.has(normalized)) {
+    return { isKnown: true, protocol: 'Base Names (ENS)', category: 'ENS' };
+  }
+  
+  // Check for Base NFT platforms (Union Authena, Zora, etc.)
+  if (chain === 'base') {
+    const nftPlatform = isBaseNFTPlatform(normalized);
+    if (nftPlatform.isPlatform) {
+      return { isKnown: true, protocol: nftPlatform.name || 'NFT Platform', category: 'NFT' };
+    }
+    
+    // Check Base bridge contracts
+    if (BASE_BRIDGE_CONTRACTS.has(normalized)) {
+      const bridgeInfo = BASE_BRIDGE_CONTRACTS.get(normalized);
+      return { isKnown: true, protocol: bridgeInfo?.name || 'Bridge', category: 'BRIDGE' };
+    }
+  }
+  
+  // Check NFT mint contracts
+  if (isNFTMintContract(normalized)) {
+    return { isKnown: true, protocol: 'NFT Mint', category: 'NFT' };
+  }
+  
+  // Check NFT marketplaces
+  if (isNFTMarketplace(normalized)) {
+    return { isKnown: true, protocol: 'NFT Marketplace', category: 'NFT' };
+  }
+  
+  // Check infrastructure protection
   const infraProtection = checkInfrastructureProtection(normalized, chain);
   if (infraProtection.isProtected) {
     return { 
@@ -543,12 +632,23 @@ function detectTransactionIntent(tx: TransactionForAnalysis): DetectedIntent | n
   
   // Check method signatures first
   if (methodId) {
-    if (MINT_SELECTORS.has(methodId)) {
+    // Check for NFT mint operations
+    if (MINT_SELECTORS.has(methodId) || isStandardMintMethod(methodId)) {
       return {
         type: 'NFT_MINT',
         confidence: 0.95,
         contractAddress: toAddress,
         description: 'NFT mint operation detected',
+      };
+    }
+    
+    // Check for ENS/naming service registrations
+    if (ENS_SELECTORS.has(methodId)) {
+      return {
+        type: 'WALLET_CONSOLIDATION', // ENS registration is legitimate user activity
+        confidence: 0.95,
+        contractAddress: toAddress,
+        description: 'ENS/naming service registration detected',
       };
     }
     

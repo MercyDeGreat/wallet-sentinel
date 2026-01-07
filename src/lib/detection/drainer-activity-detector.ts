@@ -427,8 +427,16 @@ function analyzeStrictDrainerCriteria(
   // CRITERION 2: Evidence of approval/signer compromise
   // ============================================
   // Look for approvals to malicious spenders followed by drains
+  // 
+  // PRECISE DRAINER IDENTIFICATION SIGNALS:
+  // - Multiple high-value token approvals followed by transfers to same address
+  // - Unexpected token transfers without user-initiated transactions  
+  // - Approval + transferFrom patterns within short timeframes (<10 minutes)
+  // - Known drainer contract addresses
+  // - Suspicious contract patterns (honeypots, approval traps, fake airdrops)
   
   let approvalAbuseCount = 0;
+  const approvalDrainPatterns: { approval: ApprovalForDrainerAnalysis; drain: TokenTransferForDrainerAnalysis; timeDiff: number }[] = [];
   
   for (const approval of approvals) {
     const spender = normalizeAddress(approval.spender);
@@ -450,16 +458,63 @@ function analyzeStrictDrainerCriteria(
     
     // Check if approval was followed by drain from the approved token
     const tokenAddress = normalizeAddress(approval.token);
-    const drainAfterApproval = tokenTransfers.find(t => {
+    
+    // ENHANCED: Look for approval→transferFrom pattern within 10 minutes
+    // This is a key drainer signature
+    const drainsAfterApproval = tokenTransfers.filter(t => {
       const from = normalizeAddress(t.from);
       const token = normalizeAddress(t.tokenAddress);
+      const timeDiff = t.timestamp - approval.timestamp;
+      
       return from === walletAddress && 
              token === tokenAddress && 
-             t.timestamp > approval.timestamp;
+             timeDiff > 0 &&
+             timeDiff <= 600; // 10 minutes - critical drainer window
     });
     
-    if (drainAfterApproval) {
-      approvalAbuseCount++;
+    for (const drain of drainsAfterApproval) {
+      const timeDiff = drain.timestamp - approval.timestamp;
+      approvalDrainPatterns.push({ approval, drain, timeDiff });
+      
+      // Faster drain = more likely drainer
+      if (timeDiff < 60) { // Within 1 minute = HIGH confidence
+        approvalAbuseCount += 2; // Double weight for rapid drain
+      } else if (timeDiff < 300) { // Within 5 minutes = MEDIUM confidence
+        approvalAbuseCount += 1.5;
+      } else {
+        approvalAbuseCount++;
+      }
+    }
+    
+    // Also check for ANY drain after approval (not just rapid)
+    if (drainsAfterApproval.length === 0) {
+      const anyDrainAfter = tokenTransfers.find(t => {
+        const from = normalizeAddress(t.from);
+        const token = normalizeAddress(t.tokenAddress);
+        return from === walletAddress && 
+               token === tokenAddress && 
+               t.timestamp > approval.timestamp;
+      });
+      
+      if (anyDrainAfter) {
+        approvalAbuseCount++;
+      }
+    }
+  }
+  
+  // ADDITIONAL CHECK: Multiple high-value approvals to same spender
+  const spenderApprovals = new Map<string, number>();
+  for (const approval of approvals) {
+    const spender = normalizeAddress(approval.spender);
+    if (!isSafeContract(spender) && !isDEXRouter(spender)) {
+      spenderApprovals.set(spender, (spenderApprovals.get(spender) || 0) + 1);
+    }
+  }
+  
+  // Multiple approvals to same non-whitelisted spender is suspicious
+  for (const [spender, count] of spenderApprovals) {
+    if (count >= 3) {
+      approvalAbuseCount += count - 2; // Add extra weight
     }
   }
   

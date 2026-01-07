@@ -1241,11 +1241,110 @@ export function isDEXRouterOnChain(address: string, chain: Chain): boolean {
 }
 
 /**
- * Check if this is ENS.
+ * Check if this is ENS or any naming service contract.
+ * Naming service transactions should NEVER be flagged as suspicious.
+ * 
+ * Covers:
+ * - ENS (Ethereum Name Service) on Ethereum
+ * - Basenames (ENS.base) on Base chain
+ * - Any future naming services
+ * 
+ * RULE: Registering, renewing, or managing a name is ALWAYS legitimate.
  */
 export function isENSContract(address: string): boolean {
   const contract = isSafeContract(address);
   return contract?.category === 'ENS';
+}
+
+/**
+ * Check if this is a naming service contract on a specific chain.
+ * This is the primary function to use for cross-chain naming service detection.
+ * 
+ * CRITICAL: Name service interactions should NEVER increase risk score.
+ */
+export function isNamingServiceContract(address: string, chain: Chain): boolean {
+  if (!address) return false;
+  const normalized = address.toLowerCase();
+  
+  // Check safe contracts database first
+  const contract = isSafeContractOnChain(address, chain);
+  if (contract?.category === 'ENS') return true;
+  
+  // Additional chain-specific naming service addresses
+  // (in case they're not yet in the safe contracts list)
+  const namingServices: Record<Chain, string[]> = {
+    ethereum: [
+      '0x283af0b28c62c092c9727f1ee09c02ca627eb7f5', // ENS Registrar Controller
+      '0x57f1887a8bf19b14fc0df6fd9b2acc9af147ea85', // ENS Base Registrar
+      '0x00000000000c2e074ec69a0dfb2997ba6c7d2e1e', // ENS Registry
+      '0x4976fb03c32e5b8cfe2b6ccb31c09ba78ebaba41', // ENS Public Resolver
+      '0x231b0ee14048e9dccd1d247744d114a4eb5e8e63', // ENS Name Wrapper
+      '0x253553366da8546fc250f225fe3d25d0c782303b', // ENS V2 Controller
+    ],
+    base: [
+      '0x4ccb0bb02fcaba27e82a56646e81d8c5bc4119a5', // Base Names Controller
+      '0xb94704422c2a1e396835a571837aa5ae53285a95', // Base Names Registry
+      '0x084b1c3c81545d370f3634392de611caabff8148', // Base Names Resolver
+      '0xc6d566a56a1aff6508aabd3e6b2f4ad81bfbf28e', // Basenames L2 Resolver
+      '0x03c4738ee98ae44591e1a4a4f3cab6641d95dd9a', // Base Names Registrar
+      '0xd3e6775ed9b7dc12b205c8e608dc3767b9e5efda', // Basenames Reverse Registrar
+    ],
+    bnb: [
+      // Space ID / BNB Name Service
+      '0x08ced32a7f3eec915ba84415e9c07a7286977956', // Space ID Registrar
+    ],
+    solana: [], // Solana naming is handled in solana-security.ts
+  };
+  
+  const chainServices = namingServices[chain] || [];
+  return chainServices.some(addr => addr.toLowerCase() === normalized);
+}
+
+/**
+ * Check if a transaction is a naming service operation.
+ * This checks both the contract AND the method signature.
+ */
+export function isNamingServiceTransaction(
+  toAddress: string,
+  methodId: string | undefined,
+  chain: Chain
+): boolean {
+  // Check if destination is a naming service contract
+  if (isNamingServiceContract(toAddress, chain)) {
+    return true;
+  }
+  
+  // Common naming service method signatures
+  if (methodId) {
+    const namingMethods = [
+      '0x8c6f3d39', // register(...)
+      '0xaeb8ce9b', // registerWithConfig(...)
+      '0x74694a2b', // renew(string,uint256)
+      '0xacf1a841', // renew(bytes32,uint256)
+      '0xc475abff', // renew(uint256,uint256)
+      '0x0178b8bf', // resolver(bytes32)
+      '0x1896f70a', // setResolver(bytes32,address)
+      '0x14ab9038', // setTTL(bytes32,uint64)
+      '0x5b0fc9c3', // setOwner(bytes32,address)
+      '0x06fdde03', // name()
+      '0xab0e64ca', // setName(string)
+      '0xd5fa2b00', // setAddr(bytes32,address)
+      '0x3b3b57de', // addr(bytes32)
+      '0x691f3431', // name(bytes32)
+      '0x77372213', // setText(bytes32,string,string)
+      '0x10f13a8c', // text(bytes32,string)
+      '0xf1cb7e06', // commit(bytes32)
+      '0x29aa4a6c', // available(string)
+      '0xec13d813', // rentPrice(string,uint256)
+    ];
+    
+    const sig = methodId.toLowerCase().slice(0, 10);
+    if (namingMethods.includes(sig)) {
+      return true;
+    }
+  }
+  
+  return false;
 }
 
 /**

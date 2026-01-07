@@ -123,6 +123,33 @@ export interface SweepEvent {
 }
 
 // ============================================
+// SAFE DESTINATION CHECK FOR SWEEPER DETECTION
+// ============================================
+// CRITICAL: These destinations should NEVER be counted as "sweep destinations"
+// They represent legitimate user activity (NFT mints, ENS registration, DEX swaps)
+
+function isSafeDestination(address: string): boolean {
+  if (!address) return false;
+  const normalized = address.toLowerCase();
+  
+  // Check infrastructure protection
+  const infraCheck = checkInfrastructureProtection(normalized, 'ethereum');
+  if (infraCheck.isProtected) return true;
+  
+  // Check safe contracts
+  const safeContract = isSafeContract(normalized);
+  if (safeContract) return true;
+  
+  // Check DeFi/DEX/NFT protocols
+  if (isDeFiProtocol(normalized)) return true;
+  if (isNFTMarketplace(normalized)) return true;
+  if (isENSContract(normalized)) return true;
+  if (isInfrastructureContract(normalized)) return true;
+  
+  return false;
+}
+
+// ============================================
 // BEHAVIORAL SWEEPER DETECTOR
 // ============================================
 
@@ -144,7 +171,17 @@ export function analyzeBehavioralSweeperPattern(
   
   // Build timeline
   const inboundTxs = transactions.filter(tx => tx.to?.toLowerCase() === normalized);
-  const outboundTxs = transactions.filter(tx => tx.from?.toLowerCase() === normalized);
+  
+  // CRITICAL FIX: Filter out outbound transactions to SAFE destinations
+  // Transactions to ENS, NFT platforms, DEXes etc. are NOT sweep behavior
+  const outboundTxs = transactions.filter(tx => {
+    if (tx.from?.toLowerCase() !== normalized) return false;
+    // If destination is safe, don't count as outbound for sweep detection
+    if (tx.to && isSafeDestination(tx.to)) {
+      return false;
+    }
+    return true;
+  });
   
   if (inboundTxs.length < 2 || outboundTxs.length < 2) {
     return {
