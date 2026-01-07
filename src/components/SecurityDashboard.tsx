@@ -567,6 +567,22 @@ function StatusBadge({
       text: isSolana ? 'text-blue-400' : 'text-status-safe',
       dot: isSolana ? 'status-dot-info' : 'status-dot-safe',
     },
+    HIGH_ACTIVITY_WALLET: {
+      icon: CheckCircle,
+      label: 'HIGH ACTIVITY (NON-MALICIOUS)',
+      bg: 'bg-emerald-500/10',
+      border: 'border-emerald-500/30',
+      text: 'text-emerald-400',
+      dot: 'status-dot-safe',
+    },
+    PROTOCOL_INTERACTION: {
+      icon: CheckCircle,
+      label: 'PROTOCOL INTERACTION DETECTED',
+      bg: 'bg-blue-500/10',
+      border: 'border-blue-500/30',
+      text: 'text-blue-400',
+      dot: 'status-dot-info',
+    },
     PREVIOUSLY_COMPROMISED: {
       icon: Shield, // Shield with history indicator - NOT danger icon
       label: getPreviouslyCompromisedLabel(),
@@ -720,7 +736,14 @@ function getStatusBorderClass(status: SecurityStatus): string {
   switch (status) {
     case 'SAFE':
       return 'border-l-4 border-l-status-safe';
+    case 'HIGH_ACTIVITY_WALLET':
+      // Emerald border - high activity, NOT malicious
+      return 'border-l-4 border-l-emerald-500';
+    case 'PROTOCOL_INTERACTION':
+      // Blue border - protocol interaction detected
+      return 'border-l-4 border-l-blue-500';
     case 'PREVIOUSLY_COMPROMISED':
+    case 'PREVIOUSLY_COMPROMISED_NO_ACTIVITY':
       // Blue border - informational, NOT warning/danger
       return 'border-l-4 border-l-blue-500';
     case 'POTENTIALLY_COMPROMISED':

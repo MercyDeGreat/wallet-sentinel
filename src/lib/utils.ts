@@ -139,6 +139,8 @@ export function getRiskLevelBgColor(level: RiskLevel): string {
 export function getSecurityStatusColor(status: SecurityStatus): string {
   const colors: Record<SecurityStatus, string> = {
     SAFE: 'text-status-safe',
+    HIGH_ACTIVITY_WALLET: 'text-emerald-400', // High activity, NOT malicious
+    PROTOCOL_INTERACTION: 'text-blue-400', // Protocol interactions detected
     PREVIOUSLY_COMPROMISED: 'text-amber-400', // Amber for historical (cautionary but not danger)
     PREVIOUSLY_COMPROMISED_NO_ACTIVITY: 'text-blue-400', // Blue for no recent activity
     POTENTIALLY_COMPROMISED: 'text-orange-400',

@@ -25,12 +25,14 @@ export type Chain = 'ethereum' | 'base' | 'bnb' | 'solana';
 // or "Previously Compromised (Resolved)".
 export type SecurityStatus = 
   | 'SAFE'                      // No risk indicators, no historical compromise
+  | 'HIGH_ACTIVITY_WALLET'      // High-activity wallet, NOT malicious - just very active (DEX traders, protocols)
+  | 'PROTOCOL_INTERACTION'      // Primarily interacts with known safe protocols (DEXes, bridges, etc.)
   | 'PREVIOUSLY_COMPROMISED'    // Historical exploit, NO active threat, ≥90 days clean
   | 'PREVIOUSLY_COMPROMISED_NO_ACTIVITY' // Historical compromise, ZERO drainer signals for ≥90 days
   | 'POTENTIALLY_COMPROMISED'   // At least one concrete risk signal exists
   | 'AT_RISK'                   // Active risk indicators present
   | 'ACTIVELY_COMPROMISED'      // Confirmed ACTIVE compromise (ongoing threat)
-  | 'ACTIVE_COMPROMISE_DRAINER' // ** HARD OVERRIDE ** Active wallet drainer detected (<90 days activity)
+  | 'ACTIVE_COMPROMISE_DRAINER' // ** HARD OVERRIDE ** Active wallet drainer detected - HIGH CERTAINTY ONLY
   | 'COMPROMISED'               // Legacy: maps to ACTIVELY_COMPROMISED
   | 'INCOMPLETE_DATA';          // Analysis could not complete (RPC failure, partial history)
 
@@ -107,7 +109,7 @@ export interface DrainerBehaviorDetection {
 // CRITICAL: ACTIVE_COMPROMISE_DRAINER has HIGHEST priority (110)
 // It MUST override all other statuses when active drainer behavior is detected.
 export const SECURITY_STATUS_PRIORITY: Record<SecurityStatus, number> = {
-  'ACTIVE_COMPROMISE_DRAINER': 110, // ** HIGHEST ** Active drainer - NEVER downgrade
+  'ACTIVE_COMPROMISE_DRAINER': 110, // ** HIGHEST ** Confirmed drainer with HIGH CERTAINTY - NEVER downgrade
   'ACTIVELY_COMPROMISED': 100,  // Most severe - immediate action required
   'COMPROMISED': 100,           // Legacy alias
   'AT_RISK': 80,                // Active risk indicators
@@ -115,6 +117,8 @@ export const SECURITY_STATUS_PRIORITY: Record<SecurityStatus, number> = {
   'PREVIOUSLY_COMPROMISED': 20, // Historical only - NO active risk (≥90 days clean)
   'PREVIOUSLY_COMPROMISED_NO_ACTIVITY': 15, // Historical, verified ≥90 days no activity
   'INCOMPLETE_DATA': 10,        // Analysis incomplete
+  'HIGH_ACTIVITY_WALLET': 5,    // High activity, NOT malicious - informational only
+  'PROTOCOL_INTERACTION': 3,    // Protocol interaction - informational only
   'SAFE': 0,                    // No issues
 };
 
@@ -161,6 +165,7 @@ export function migrateLegacyStatus(
 
 export interface DrainerOverrideResult {
   // If TRUE, status MUST be ACTIVE_COMPROMISE_DRAINER - no exceptions
+  // CRITICAL: Only TRUE when ALL strict criteria are met (false positives are damaging)
   shouldOverride: boolean;
   
   // The signals that triggered the override
@@ -183,6 +188,15 @@ export interface DrainerOverrideResult {
   
   // Explicit list of conditions that MUST ALL be true to downgrade
   downgradeBlockers: string[];
+  
+  // Context classification result (SAFE_PROTOCOL, SELF_OWNED, RELAY, etc.)
+  // If classification is NOT 'UNKNOWN', the wallet is NOT a drainer
+  contextClassification?: {
+    classification: 'SAFE_PROTOCOL' | 'SELF_OWNED' | 'RELAY' | 'DEPLOYER' | 'HIGH_ACTIVITY' | 'UNKNOWN';
+    confidence: number;
+    reason: string;
+    suggestedStatus?: 'SAFE' | 'HIGH_ACTIVITY_WALLET' | null;
+  };
 }
 
 export interface CompromiseResolutionInfo {

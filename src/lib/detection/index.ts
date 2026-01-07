@@ -14,9 +14,21 @@
 // Core detection engine
 export * from './detection-engine';
 
-// DRAINER ACTIVITY DETECTOR (SECURITY FIX 2024-01)
-// Implements HARD OVERRIDE rule - drainer detection that CANNOT be bypassed.
-// Any drainer signal <90 days = ACTIVE_COMPROMISE_DRAINER status.
+// CONTEXT CLASSIFIER (FALSE POSITIVE FIX 2024-01)
+// PRE-FILTER that runs BEFORE drainer detection.
+// Classifies wallet context to prevent false positives on:
+// - DEX routers (1inch, Uniswap, CowSwap)
+// - NFT marketplaces (OpenSea, Blur)
+// - Privacy/rollup systems (Aztec, relayers)
+// - Verified deployers, self-transfers, high-activity wallets
+export * from './context-classifier';
+
+// DRAINER ACTIVITY DETECTOR (REFACTORED 2024-01)
+// Implements STRICT CRITERIA - ALL conditions must be met to flag as drainer:
+// 1. Funds from MULTIPLE unrelated victims
+// 2. Evidence of approval/signer compromise
+// 3. Outflows to consolidation/laundering patterns
+// 4. NO interaction with DEX/NFT/legitimate protocols
 export * from './drainer-activity-detector';
 
 // Malicious address database
