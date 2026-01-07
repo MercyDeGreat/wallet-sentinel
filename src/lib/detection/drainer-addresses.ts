@@ -91,6 +91,15 @@ export const DRAINER_RECIPIENTS: string[] = [
 const EXPLICIT_WHITELIST = new Set([
   '0x24cea16d97f61d0882481544f33fa5a8763991a6', // Union Authena (Base)
   '0x00005ea00ac477b1030ce78506496e8c2de24bf5', // OpenSea SeaDrop - LEGITIMATE NFT drop mechanism
+  // Blur.io Marketplace contracts
+  '0x000000000000ad05ccc4f10045630fb830b95127', // Blur Marketplace
+  '0x39da41747a83aee658334415666f3ef92dd0d541', // Blur Marketplace 2
+  '0x29469395eaf6f95920e59f858042f0e28d98a20b', // Blur Blend
+  '0x0000000000a39bb272e79075ade125fd351887ac', // Blur Pool
+  '0xb2ecfe4e4d61f8790bbb9de2d1259b9e2410cea5', // Blur Exchange
+  // Treeverse NFT Project
+  '0x1b829b926a14634d36625e60165c0770c09d02b2', // Treeverse Founders Plot
+  '0x55c29a6d0bf39f35f9c72d42c5d29db7e2b4ae29', // Treeverse Deployer
 ]);
 
 export function isKnownDrainer(address: string): boolean {

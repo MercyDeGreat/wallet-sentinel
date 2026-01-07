@@ -172,6 +172,37 @@ export const PROTECTED_INFRASTRUCTURE: ProtectedContract[] = [
     website: 'https://blur.io',
     absoluteProtection: true,
   },
+  {
+    address: '0x39da41747a83aee658334415666f3ef92dd0d541',
+    name: 'Blur Marketplace 2',
+    type: 'NFT_MARKETPLACE',
+    chains: ['ethereum'],
+    verified: true,
+    website: 'https://blur.io',
+    absoluteProtection: true,
+  },
+  
+  // ============================================
+  // TREEVERSE (NFT PROJECT)
+  // ============================================
+  {
+    address: '0x1b829b926a14634d36625e60165c0770c09d02b2',
+    name: 'Treeverse Founders Plot',
+    type: 'NFT_MARKETPLACE',
+    chains: ['ethereum'],
+    verified: true,
+    website: 'https://treeverse.net',
+    absoluteProtection: true,
+  },
+  {
+    address: '0x55c29a6d0bf39f35f9c72d42c5d29db7e2b4ae29',
+    name: 'Treeverse Deployer',
+    type: 'SETTLEMENT_CONTRACT',
+    chains: ['ethereum'],
+    verified: true,
+    website: 'https://treeverse.net',
+    absoluteProtection: true,
+  },
   
   // ============================================
   // OTHER NFT MARKETPLACES

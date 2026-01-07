@@ -134,6 +134,16 @@ export const SAFE_CONTRACTS: SafeContract[] = [
     interactionCount: 'HIGH',
   },
   {
+    address: '0x39da41747a83aee658334415666f3ef92dd0d541',
+    name: 'Blur Marketplace 2',
+    category: 'NFT_MARKETPLACE',
+    chains: ['ethereum'],
+    verified: true,
+    description: 'Blur.io NFT marketplace V2 contract',
+    website: 'https://blur.io',
+    interactionCount: 'HIGH',
+  },
+  {
     address: '0x29469395eaf6f95920e59f858042f0e28d98a20b',
     name: 'Blur Blend',
     category: 'NFT_MARKETPLACE',
@@ -155,6 +165,19 @@ export const SAFE_CONTRACTS: SafeContract[] = [
     category: 'NFT_MARKETPLACE',
     chains: ['ethereum'],
     verified: true,
+    interactionCount: 'HIGH',
+  },
+  // ============================================
+  // BLUR ADDITIONAL CONTRACTS
+  // ============================================
+  {
+    address: '0x0000000000a39bb272e79075ade125fd351887ac',
+    name: 'Blur Bidding Pool',
+    category: 'NFT_MARKETPLACE',
+    chains: ['ethereum'],
+    verified: true,
+    description: 'Blur.io bidding pool for NFT purchases',
+    website: 'https://blur.io',
     interactionCount: 'HIGH',
   },
   {
@@ -412,6 +435,28 @@ export const SAFE_CONTRACTS: SafeContract[] = [
     chains: ['ethereum'],
     verified: true,
     interactionCount: 'HIGH',
+  },
+  // ============================================
+  // TREEVERSE - LEGITIMATE NFT PROJECT
+  // ============================================
+  {
+    address: '0x1b829b926a14634d36625e60165c0770c09d02b2',
+    name: 'Treeverse Founders Plot',
+    category: 'NFT_MINT_CONTRACT',
+    chains: ['ethereum'],
+    verified: true,
+    description: 'Treeverse virtual world NFT - legitimate NFT project',
+    website: 'https://treeverse.net',
+    interactionCount: 'HIGH',
+  },
+  {
+    address: '0x55c29a6d0bf39f35f9c72d42c5d29db7e2b4ae29',
+    name: 'Treeverse Deployer',
+    category: 'NFT_MINT_CONTRACT',
+    chains: ['ethereum'],
+    verified: true,
+    description: 'Treeverse contract deployer - legitimate',
+    interactionCount: 'MEDIUM',
   },
   {
     address: '0xff9c1b15b16263c61d017ee9f65c50e4ae0113d7',

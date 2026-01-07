@@ -222,10 +222,14 @@ const NFT_MARKETPLACES = new Set([
   '0x0000000000000068f116a894984e2db1123eb395', // OpenSea Seaport 1.5
   '0x00000000000001ad428e4906ae43d8f9852d0dd6', // Seaport 1.6
   '0x00005ea00ac477b1030ce78506496e8c2de24bf5', // OpenSea SeaDrop - LEGITIMATE NFT drops!
-  '0x000000000000ad05ccc4f10045630fb830b95127', // Blur
+  '0x000000000000ad05ccc4f10045630fb830b95127', // Blur Marketplace
+  '0x39da41747a83aee658334415666f3ef92dd0d541', // Blur Marketplace 2
   '0xb2ecfe4e4d61f8790bbb9de2d1259b9e2410cea5', // Blur Exchange
+  '0x29469395eaf6f95920e59f858042f0e28d98a20b', // Blur Blend
+  '0x0000000000a39bb272e79075ade125fd351887ac', // Blur Pool
   '0x59728544b08ab483533076417fbbb2fd0b17ce3a', // LooksRare
   '0x74312363e45dcaba76c59ec49a7aa8a65a67eed3', // X2Y2
+  '0x1b829b926a14634d36625e60165c0770c09d02b2', // Treeverse Founders Plot
 ]);
 
 const STAKING_PROTOCOLS = new Set([

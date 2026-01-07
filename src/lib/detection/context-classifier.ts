@@ -117,8 +117,9 @@ const RELAYER_SYSTEMS = new Set([
 // Deployer wallets have specific on-chain patterns
 
 const KNOWN_DEPLOYERS = new Set([
-  // Treeverse deployer
-  '0x55c29a6d0bf39f35f9c72d42c5d29db7e2b4ae29',
+  // Treeverse deployer and contracts
+  '0x55c29a6d0bf39f35f9c72d42c5d29db7e2b4ae29', // Treeverse Deployer
+  '0x1b829b926a14634d36625e60165c0770c09d02b2', // Treeverse Founders Plot NFT
   
   // OpenSea deployer
   '0xa5409ec958c83c3f309868babaca7c86dcb077c1',
@@ -126,8 +127,9 @@ const KNOWN_DEPLOYERS = new Set([
   // Uniswap deployer
   '0x41653c7d61609d856f29355e404f310ec4142cfb',
   
-  // Blur deployer
-  '0xb2ecfe4e4d61f8790bbb9de2d1259b9e2410cea5',
+  // Blur deployer and contracts
+  '0xb2ecfe4e4d61f8790bbb9de2d1259b9e2410cea5', // Blur Exchange
+  '0x39da41747a83aee658334415666f3ef92dd0d541', // Blur Marketplace 2
   
   // Add more verified deployers as needed
 ]);
