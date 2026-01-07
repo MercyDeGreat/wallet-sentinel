@@ -13,11 +13,18 @@
 // D. User Intent Validation
 // E. Safe Label Hard Constraints
 
-import { Chain, SecurityStatus, CompromiseReasonCode, CompromiseEvidence, HistoricalIncident } from '@/types';
+import { Chain, SecurityStatus, CompromiseReasonCode, CompromiseEvidence, HistoricalIncident, DrainerOverrideResult } from '@/types';
 import { isMaliciousAddress, isDrainerRecipient, isLegitimateContract } from './malicious-database';
 import { isSafeContract, isENSContract, isDeFiProtocol, isInfrastructureContract, isNFTMarketplace, isNFTMintContract, isNFTMintTransaction, isStandardMintMethod, isBaseNFTActivity, isPaidMintTransaction } from './safe-contracts';
 import { checkInfrastructureProtection } from './infrastructure-protection';
 import { checkBaseProtocolInteraction, checkSelfTransfer, checkExchangeWallet } from './base-chain-protection';
+import { 
+  detectDrainerActivity, 
+  normalizeAddress,
+  TransactionForDrainerAnalysis,
+  TokenTransferForDrainerAnalysis,
+  ApprovalForDrainerAnalysis,
+} from './drainer-activity-detector';
 
 // ============================================
 // HISTORICAL VS ACTIVE COMPROMISE DETECTION
@@ -455,6 +462,21 @@ export interface CompromiseAnalysisResult {
   
   // Detailed reasoning output (for debugging/transparency)
   riskReasoning?: import('@/types').RiskReasoningOutput;
+  
+  // ============================================
+  // COMPROMISE RESOLUTION INFO (NEW)
+  // ============================================
+  // Provides granular sub-status for "Previously Compromised" wallets
+  // Used for UI badges - does NOT affect risk score
+  compromiseResolution?: import('@/types').CompromiseResolutionInfo;
+  
+  // ============================================
+  // DRAINER OVERRIDE RESULT (SECURITY FIX 2024-01)
+  // ============================================
+  // If drainerOverride.shouldOverride is TRUE, the wallet MUST be
+  // classified as ACTIVE_COMPROMISE_DRAINER regardless of any other analysis.
+  // This is a HARD OVERRIDE that cannot be bypassed.
+  drainerOverride?: DrainerOverrideResult;
 }
 
 export interface SafetyCheckResults {
@@ -497,10 +519,96 @@ export async function analyzeWalletCompromise(
   tokenTransfers: TokenTransferForAnalysis[],
   currentBalance: string
 ): Promise<CompromiseAnalysisResult> {
-  const normalized = walletAddress.toLowerCase();
+  const normalized = normalizeAddress(walletAddress);
   const evidence: CompromiseEvidence[] = [];
   const reasonCodes: CompromiseReasonCode[] = [];
   const safetyBlockers: string[] = [];
+  const currentTimestamp = Math.floor(Date.now() / 1000);
+  
+  // ============================================
+  // STEP 0: DRAINER ACTIVITY DETECTION (HARD OVERRIDE)
+  // ============================================
+  // This MUST run first and its result supersedes all other analysis.
+  // If shouldOverride is TRUE, the wallet MUST be classified as
+  // ACTIVE_COMPROMISE_DRAINER regardless of any other factors.
+  
+  console.log(`[CompromiseDetector] Running drainer activity detection for ${normalized.slice(0, 10)}...`);
+  
+  // Convert to drainer analysis format
+  const txsForDrainer: TransactionForDrainerAnalysis[] = transactions.map(tx => ({
+    hash: tx.hash,
+    from: tx.from,
+    to: tx.to,
+    value: tx.value,
+    input: tx.input,
+    timestamp: tx.timestamp,
+    blockNumber: tx.blockNumber,
+    methodId: tx.methodId,
+    isError: tx.isError,
+    gasUsed: tx.gasUsed,
+  }));
+  
+  const transfersForDrainer: TokenTransferForDrainerAnalysis[] = tokenTransfers.map(t => ({
+    from: t.from,
+    to: t.to,
+    value: t.value,
+    hash: t.hash,
+    timestamp: t.timestamp,
+    tokenSymbol: t.tokenSymbol,
+    tokenAddress: t.tokenAddress,
+    blockNumber: t.blockNumber,
+    tokenType: t.tokenType,
+  }));
+  
+  const approvalsForDrainer: ApprovalForDrainerAnalysis[] = approvals.map(a => ({
+    token: a.token,
+    tokenSymbol: a.tokenSymbol,
+    spender: a.spender,
+    owner: a.owner,
+    amount: a.amount,
+    isUnlimited: a.isUnlimited,
+    timestamp: a.timestamp,
+    transactionHash: a.transactionHash,
+    blockNumber: a.blockNumber,
+    wasRevoked: a.wasRevoked,
+    revokedTimestamp: a.revokedTimestamp,
+  }));
+  
+  const drainerOverride = detectDrainerActivity(
+    normalized,
+    chain,
+    txsForDrainer,
+    transfersForDrainer,
+    approvalsForDrainer,
+    currentTimestamp
+  );
+  
+  console.log(`[CompromiseDetector] Drainer override result: shouldOverride=${drainerOverride.shouldOverride}, ` +
+    `signals=${drainerOverride.detectedSignals.length}, confidence=${drainerOverride.confidence}, ` +
+    `recency=${drainerOverride.recency.recency} (${drainerOverride.recency.daysSinceLastActivity} days)`);
+  
+  // Add drainer signals to evidence
+  for (const signal of drainerOverride.detectedSignals) {
+    evidence.push({
+      code: 'SWEEPER_BOT_DETECTED' as CompromiseReasonCode,
+      severity: 'CRITICAL',
+      description: signal.details,
+      relatedTxHash: signal.txHash,
+      timestamp: signal.detectedAt,
+      confidence: signal.confidence,
+      isHistorical: !drainerOverride.recency.isActive,
+      isActiveThreat: drainerOverride.recency.isActive,
+    });
+    if (!reasonCodes.includes('SWEEPER_BOT_DETECTED')) {
+      reasonCodes.push('SWEEPER_BOT_DETECTED');
+    }
+    safetyBlockers.push(`Drainer signal detected: ${signal.signal}`);
+  }
+  
+  // If hard override triggered, we still run the full analysis but will override the final status
+  if (drainerOverride.shouldOverride) {
+    console.log(`[CompromiseDetector] *** HARD OVERRIDE TRIGGERED *** Wallet MUST be ACTIVE_COMPROMISE_DRAINER`);
+  }
 
   // ============================================
   // A. APPROVAL-BASED COMPROMISE DETECTION
@@ -550,7 +658,7 @@ export async function analyzeWalletCompromise(
   // ============================================
   // F. HISTORICAL VS ACTIVE THREAT CLASSIFICATION
   // ============================================
-  const currentTimestamp = Math.floor(Date.now() / 1000);
+  // Note: currentTimestamp already defined at the start of this function
   const activeThreats: CompromiseEvidence[] = [];
   const historicalThreats: CompromiseEvidence[] = [];
   
@@ -721,13 +829,54 @@ export async function analyzeWalletCompromise(
     historicalCompromise
   );
   
-  // OVERRIDE: Enforce permanent risk flags
-  if (hasPermanentRiskFlag && status === 'SAFE') {
+  // ============================================
+  // HARD OVERRIDE: DRAINER ACTIVITY DETECTION
+  // ============================================
+  // This MUST take precedence over ALL other status determinations.
+  // If drainerOverride.shouldOverride is TRUE, status MUST be ACTIVE_COMPROMISE_DRAINER.
+  // This cannot be bypassed, downgraded, or resolved.
+  
+  if (drainerOverride.shouldOverride) {
+    console.log(`[CompromiseDetector] *** APPLYING HARD OVERRIDE *** Status: ${status} -> ACTIVE_COMPROMISE_DRAINER`);
+    status = 'ACTIVE_COMPROMISE_DRAINER';
+    confidence = Math.max(confidence, drainerOverride.confidence, 90);
+    summary = `ACTIVE WALLET DRAINER DETECTED: ${drainerOverride.detectedSignals.length} drainer behavior signal(s) detected within the last ${drainerOverride.recency.daysSinceLastActivity} days. ` +
+      `Signals: ${drainerOverride.detectedSignals.map(s => s.signal).join(', ')}. ` +
+      `This classification CANNOT be downgraded to Safe or Previously Compromised while activity exists within 90 days. ` +
+      `IMMEDIATE ACTION REQUIRED: Do not send any funds to this wallet.`;
+  }
+  // SECONDARY OVERRIDE: Permanent risk flags (historical drainer interaction)
+  else if (hasPermanentRiskFlag && status === 'SAFE') {
     console.log(`[CompromiseDetector] OVERRIDE: Status was SAFE but permanent risk flags detected - changing to PREVIOUSLY_COMPROMISED`);
     status = 'PREVIOUSLY_COMPROMISED';
     confidence = Math.max(confidence, 70);
     summary = `Previously compromised. ${drainerCheck.hasConfirmedDrainerInteraction ? `Interacted with known drainer(s): ${drainerCheck.drainerTypes.join(', ')}. ` : ''}${sweepCheck.assetSweepDetected ? `Asset sweep detected. ` : ''}Revoked approvals do not erase this history. Wallet cannot be marked SAFE.`;
   }
+  // TERTIARY CHECK: If drainer override has signals but not active (>90 days), can be PREVIOUSLY_COMPROMISED
+  else if (drainerOverride.detectedSignals.length > 0 && !drainerOverride.recency.isActive) {
+    if (status === 'SAFE') {
+      console.log(`[CompromiseDetector] Historical drainer activity detected (${drainerOverride.recency.daysSinceLastActivity} days ago) - changing to PREVIOUSLY_COMPROMISED`);
+      status = 'PREVIOUSLY_COMPROMISED_NO_ACTIVITY';
+      confidence = Math.max(confidence, 50);
+      summary = `Previously compromised (resolved). Drainer activity detected ${drainerOverride.recency.daysSinceLastActivity} days ago. ` +
+        `No activity in the last 90 days. Wallet may be used with caution but cannot be marked as fully Safe.`;
+    }
+  }
+
+  // ============================================
+  // GENERATE COMPROMISE RESOLUTION INFO
+  // ============================================
+  // This provides granular sub-status for UI display
+  // SECURITY FIX: Pass drainerOverride to ensure ACTIVE_DRAINER_DETECTED is set when appropriate
+  const compromiseResolution = generateCompromiseResolutionInfo(
+    status,
+    activeThreats,
+    historicalThreats,
+    historicalCompromise,
+    hasPermanentRiskFlag,
+    daysSinceLastIncident,
+    drainerOverride
+  );
 
   return {
     securityStatus: status,
@@ -736,12 +885,21 @@ export async function analyzeWalletCompromise(
     confidence,
     summary,
     safetyChecks,
-    canBeSafe: safetyChecks.allChecksPass && safetyBlockers.length === 0 && activeThreats.length === 0 && !hasPermanentRiskFlag,
+    // SECURITY FIX: canBeSafe is FALSE if drainer override detected
+    canBeSafe: safetyChecks.allChecksPass && 
+               safetyBlockers.length === 0 && 
+               activeThreats.length === 0 && 
+               !hasPermanentRiskFlag && 
+               !drainerOverride.shouldOverride &&
+               drainerOverride.canEverBeSafe,
     safetyBlockers,
     historicalCompromise,
     activeThreats,
     historicalThreats,
     riskReasoning,
+    compromiseResolution,
+    // SECURITY FIX: Include drainer override result for transparency
+    drainerOverride,
   };
 }
 
@@ -1761,15 +1919,212 @@ function detectAssetSweep(
 }
 
 // ============================================
+// GENERATE COMPROMISE RESOLUTION INFO
+// ============================================
+// Provides granular sub-status for "Previously Compromised" wallets
+// These are INFORMATIONAL badges - they do NOT affect risk score
+
+function generateCompromiseResolutionInfo(
+  status: SecurityStatus,
+  activeThreats: CompromiseEvidence[],
+  historicalThreats: CompromiseEvidence[],
+  historicalCompromise: CompromiseAnalysisResult['historicalCompromise'],
+  hasPermanentRiskFlag: boolean,
+  daysSinceLastIncident?: number,
+  drainerOverride?: DrainerOverrideResult
+): import('@/types').CompromiseResolutionInfo {
+  const hasHistoricalCompromise = historicalThreats.length > 0 || hasPermanentRiskFlag || historicalCompromise?.hasHistoricalIncident;
+  const hasActiveThreats = activeThreats.length > 0;
+  
+  // Default values
+  const remediation = historicalCompromise?.remediationStatus;
+  const allApprovalsRevoked = remediation?.allApprovalsRevoked ?? true;
+  const noActiveMaliciousContracts = remediation?.noActiveDrainerAccess ?? true;
+  const noOngoingAutomatedOutflows = remediation?.noOngoingDrains ?? true;
+  
+  // SECURITY FIX: Use 90 days threshold instead of 30 days
+  const RECENT_ACTIVITY_THRESHOLD_DAYS = 90;
+  const noRecentSweeperActivity = !daysSinceLastIncident || daysSinceLastIncident > RECENT_ACTIVITY_THRESHOLD_DAYS;
+  
+  // ============================================
+  // DETERMINE SUB-STATUS
+  // ============================================
+  // SECURITY FIX: ACTIVE_DRAINER_DETECTED has HIGHEST priority
+  let subStatus: import('@/types').CompromiseSubStatus;
+  
+  // HARD RULE: If drainer override is active, sub-status MUST be ACTIVE_DRAINER_DETECTED
+  if (drainerOverride?.shouldOverride) {
+    subStatus = 'ACTIVE_DRAINER_DETECTED';
+  } else if (!hasHistoricalCompromise && !hasActiveThreats && !drainerOverride?.detectedSignals.length) {
+    // No compromise history at all
+    subStatus = 'NONE';
+  } else if (hasActiveThreats || (drainerOverride?.recency?.isActive && drainerOverride?.detectedSignals?.length > 0)) {
+    // Currently compromised with active threats OR active drainer signals
+    subStatus = 'ACTIVE_THREAT';
+  } else if (
+    hasHistoricalCompromise &&
+    allApprovalsRevoked &&
+    noActiveMaliciousContracts &&
+    noRecentSweeperActivity &&
+    noOngoingAutomatedOutflows &&
+    (!drainerOverride || !drainerOverride.recency.isActive)
+  ) {
+    // Fully resolved: all conditions met AND ≥90 days since drainer activity
+    subStatus = 'RESOLVED';
+  } else if (hasHistoricalCompromise && !hasActiveThreats) {
+    // Historical compromise, no active threats, but not fully resolved
+    // (e.g., activity within 90 days)
+    subStatus = 'NO_ACTIVE_RISK';
+  } else {
+    subStatus = 'NONE';
+  }
+  
+  // ============================================
+  // GENERATE DISPLAY BADGE
+  // ============================================
+  const displayBadge = generateDisplayBadge(subStatus, daysSinceLastIncident);
+  
+  // ============================================
+  // GENERATE TOOLTIP AND EXPLANATION
+  // ============================================
+  const { tooltipText, explanation } = generateCompromiseMessages(
+    subStatus,
+    allApprovalsRevoked,
+    noActiveMaliciousContracts,
+    noRecentSweeperActivity,
+    daysSinceLastIncident
+  );
+  
+  return {
+    subStatus,
+    historical_compromise: hasHistoricalCompromise,
+    active_threats: hasActiveThreats,
+    compromise_resolved_at: subStatus === 'RESOLVED' && remediation?.lastMaliciousActivity
+      ? remediation.lastMaliciousActivity
+      : undefined,
+    resolution: {
+      allApprovalsRevoked,
+      noActiveMaliciousContracts,
+      noRecentSweeperActivity,
+      noOngoingAutomatedOutflows,
+      daysSinceLastMaliciousActivity: daysSinceLastIncident,
+      lastMaliciousActivityTimestamp: remediation?.lastMaliciousActivity,
+    },
+    displayBadge,
+    tooltipText,
+    explanation,
+  };
+}
+
+function generateDisplayBadge(
+  subStatus: import('@/types').CompromiseSubStatus,
+  daysSinceLastIncident?: number
+): import('@/types').CompromiseDisplayBadge {
+  switch (subStatus) {
+    // SECURITY FIX: New highest priority badge for active drainer
+    case 'ACTIVE_DRAINER_DETECTED':
+      return {
+        text: 'ACTIVE WALLET DRAINER',
+        variant: 'danger',
+        icon: 'alert-circle',
+        colorScheme: 'red',
+      };
+    
+    case 'RESOLVED':
+      return {
+        text: 'Previously Compromised (Resolved)',
+        variant: 'informational',
+        icon: 'shield-check',
+        colorScheme: 'gray',
+      };
+    
+    case 'NO_ACTIVE_RISK':
+      return {
+        text: 'Previously Compromised (No Active Risk)',
+        variant: 'neutral',
+        icon: 'info',
+        colorScheme: 'blue',
+      };
+    
+    case 'ACTIVE_THREAT':
+      return {
+        text: 'Actively Compromised',
+        variant: 'danger',
+        icon: 'alert-circle',
+        colorScheme: 'red',
+      };
+    
+    case 'NONE':
+    default:
+      return {
+        text: 'Clean',
+        variant: 'informational',
+        icon: 'shield-check',
+        colorScheme: 'gray',
+      };
+  }
+}
+
+function generateCompromiseMessages(
+  subStatus: import('@/types').CompromiseSubStatus,
+  allApprovalsRevoked: boolean,
+  noActiveMaliciousContracts: boolean,
+  noRecentSweeperActivity: boolean,
+  daysSinceLastIncident?: number
+): { tooltipText: string; explanation: string } {
+  switch (subStatus) {
+    // SECURITY FIX: New highest priority message for active drainer
+    case 'ACTIVE_DRAINER_DETECTED':
+      return {
+        tooltipText: 'CRITICAL: This wallet exhibits ACTIVE WALLET DRAINER behavior. DO NOT SEND ANY FUNDS to this address.',
+        explanation: `ACTIVE WALLET DRAINER DETECTED. This wallet shows active drainer behavior patterns within the last ${daysSinceLastIncident || 'few'} days. ` +
+          'This includes: immediate outbound transfers after receiving funds, token sweep patterns, or drain routing to aggregation hubs. ' +
+          'This classification CANNOT be downgraded until at least 90 days of NO suspicious activity. ' +
+          'DO NOT INTERACT WITH THIS WALLET.',
+      };
+    
+    case 'RESOLVED':
+      return {
+        tooltipText: 'All known malicious access has been revoked. This wallet was compromised in the past but currently shows no active threats (≥90 days).',
+        explanation: `No active threats detected. This wallet had past security incidents which appear resolved.${daysSinceLastIncident ? ` Last incident was ${daysSinceLastIncident} days ago.` : ''} All malicious approvals have been revoked and no ongoing suspicious activity is detected for ≥90 days.`,
+      };
+    
+    case 'NO_ACTIVE_RISK':
+      return {
+        tooltipText: 'This wallet was compromised in the past but currently shows no active threats. Continue to monitor for any unusual activity.',
+        explanation: `No active threats detected. This wallet had past security incidents.${!noRecentSweeperActivity ? ' Some activity was detected within the last 90 days - continue monitoring.' : ''} The wallet is currently safe to use but should be monitored.`,
+      };
+    
+    case 'ACTIVE_THREAT':
+      return {
+        tooltipText: 'This wallet has active security threats that require immediate attention.',
+        explanation: `Active threats detected. ${!allApprovalsRevoked ? 'Malicious approvals are still active. ' : ''}${!noActiveMaliciousContracts ? 'Active malicious contracts detected. ' : ''}Immediate action is required to secure this wallet.`,
+      };
+    
+    case 'NONE':
+    default:
+      return {
+        tooltipText: 'No security issues detected.',
+        explanation: 'This wallet shows no signs of compromise or security issues.',
+      };
+  }
+}
+
+// ============================================
 // DETERMINE FINAL STATUS WITH HISTORICAL AWARENESS
 // ============================================
 // Key distinction:
+// - ACTIVE_COMPROMISE_DRAINER: *** HIGHEST PRIORITY *** Active drainer behavior (<90 days)
 // - ACTIVELY_COMPROMISED: Ongoing threat (active approvals, drainer access, ongoing drains)
+// - PREVIOUSLY_COMPROMISED_NO_ACTIVITY: Historical drainer activity, ≥90 days no signals
 // - PREVIOUSLY_COMPROMISED: Historical incident but threat remediated
 // - SAFE: No history of compromise
 //
-// CRITICAL NEW RULE: If wallet has EVER interacted with a confirmed drainer,
-// it can NEVER be marked SAFE, only PREVIOUSLY_COMPROMISED at best.
+// CRITICAL RULES (SECURITY FIX 2024-01):
+// 1. If wallet has ANY drainer signal within 90 days, it MUST be ACTIVE_COMPROMISE_DRAINER
+// 2. ACTIVE_COMPROMISE_DRAINER can NEVER be downgraded to Safe or Previously Compromised
+// 3. Only wallets with ≥90 days of NO drainer activity can be PREVIOUSLY_COMPROMISED_NO_ACTIVITY
+// 4. Wallets with drainer history can NEVER be marked SAFE
 
 function determineSecurityStatusWithHistory(
   evidence: CompromiseEvidence[],
@@ -1898,6 +2253,246 @@ function determineSecurityStatusWithHistory(
 }
 
 // ============================================
+// COMPROMISE RESOLUTION LOGIC
+// ============================================
+// Determines if a previously compromised wallet has been resolved
+// and assigns appropriate sub-status for UI display
+
+import type { 
+  CompromiseResolutionInfo, 
+  CompromiseSubStatus, 
+  CompromiseDisplayBadge,
+  HistoricalCompromiseInfo 
+} from '@/types';
+
+// Time thresholds for resolution determination
+const DAYS_SINCE_LAST_INCIDENT_THRESHOLD = 30; // 30 days minimum for "Resolved"
+const DAYS_SINCE_LAST_INCIDENT_SAFE_THRESHOLD = 60; // 60 days for high confidence "Resolved"
+
+/**
+ * Determine the compromise resolution status for a wallet.
+ * This provides granular sub-status for "Previously Compromised" wallets.
+ * 
+ * RULES:
+ * - "Resolved": All approvals revoked, no active contracts, 30-60+ days since incident
+ * - "No Active Risk": Historical compromise, no active threats, should be monitored
+ * - "Active Threat": Currently compromised with active threat vectors
+ */
+export function determineCompromiseResolution(
+  hasHistoricalCompromise: boolean,
+  activeThreats: CompromiseEvidence[],
+  historicalThreats: CompromiseEvidence[],
+  approvals: ApprovalForAnalysis[],
+  lastMaliciousActivityTimestamp?: string
+): CompromiseResolutionInfo {
+  const now = Date.now();
+  
+  // Calculate days since last incident
+  let daysSinceLastMaliciousActivity: number | undefined;
+  if (lastMaliciousActivityTimestamp) {
+    const lastIncidentTime = new Date(lastMaliciousActivityTimestamp).getTime();
+    daysSinceLastMaliciousActivity = Math.floor((now - lastIncidentTime) / (24 * 60 * 60 * 1000));
+  }
+  
+  // Check if all malicious approvals are revoked
+  const maliciousApprovals = approvals.filter(a => {
+    const isMalicious = isMaliciousAddress(a.spender.toLowerCase(), 'ethereum') || 
+                        isDrainerRecipient(a.spender.toLowerCase());
+    return isMalicious;
+  });
+  
+  const allApprovalsRevoked = maliciousApprovals.every(a => {
+    const allowance = BigInt(a.amount || '0');
+    return allowance === BigInt(0);
+  }) || maliciousApprovals.length === 0;
+  
+  // Check for active malicious contracts
+  const noActiveMaliciousContracts = activeThreats.length === 0;
+  
+  // Check for recent sweeper/drainer activity (within 30-60 days)
+  const noRecentSweeperActivity = daysSinceLastMaliciousActivity === undefined || 
+                                   daysSinceLastMaliciousActivity >= DAYS_SINCE_LAST_INCIDENT_THRESHOLD;
+  
+  // Check for ongoing automated outflows
+  const noOngoingAutomatedOutflows = !activeThreats.some(t => 
+    t.code === 'SWEEPER_PATTERN' || t.code === 'AUTOMATED_OUTFLOW'
+  );
+  
+  // ============================================
+  // DETERMINE SUB-STATUS
+  // ============================================
+  
+  let subStatus: CompromiseSubStatus;
+  let displayBadge: CompromiseDisplayBadge;
+  let tooltipText: string;
+  let explanation: string;
+  
+  // CASE 1: No historical compromise
+  if (!hasHistoricalCompromise && activeThreats.length === 0 && historicalThreats.length === 0) {
+    subStatus = 'NONE';
+    displayBadge = {
+      text: 'Clean',
+      variant: 'neutral',
+      icon: 'shield-check',
+      colorScheme: 'gray',
+    };
+    tooltipText = 'No security incidents detected in this wallet\'s history.';
+    explanation = 'No active threats detected. Wallet history shows no security incidents.';
+  }
+  // CASE 2: Active threats exist
+  else if (activeThreats.length > 0) {
+    subStatus = 'ACTIVE_THREAT';
+    displayBadge = {
+      text: 'Active Threat',
+      variant: 'danger',
+      icon: 'alert-circle',
+      colorScheme: 'red',
+    };
+    tooltipText = 'This wallet has active security threats that require immediate attention.';
+    explanation = `Active compromise detected: ${activeThreats.length} active threat(s) found. Immediate action required.`;
+  }
+  // CASE 3: Previously Compromised (Resolved)
+  else if (
+    hasHistoricalCompromise &&
+    allApprovalsRevoked &&
+    noActiveMaliciousContracts &&
+    noRecentSweeperActivity &&
+    noOngoingAutomatedOutflows &&
+    daysSinceLastMaliciousActivity !== undefined &&
+    daysSinceLastMaliciousActivity >= DAYS_SINCE_LAST_INCIDENT_THRESHOLD
+  ) {
+    subStatus = 'RESOLVED';
+    displayBadge = {
+      text: 'Previously Compromised (Resolved)',
+      variant: 'informational',
+      icon: 'shield-check',
+      colorScheme: 'blue',
+    };
+    tooltipText = 'This wallet was compromised in the past but currently shows no active threats. All known malicious access has been revoked.';
+    explanation = `No active threats detected. This wallet had past security incidents which appear resolved. Last incident was ${daysSinceLastMaliciousActivity} days ago.`;
+  }
+  // CASE 4: Previously Compromised (No Active Risk)
+  else if (
+    hasHistoricalCompromise &&
+    noActiveMaliciousContracts &&
+    noOngoingAutomatedOutflows
+  ) {
+    subStatus = 'NO_ACTIVE_RISK';
+    displayBadge = {
+      text: 'Previously Compromised (No Active Risk)',
+      variant: 'informational',
+      icon: 'info',
+      colorScheme: 'blue',
+    };
+    tooltipText = 'This wallet was compromised in the past but currently shows no active threats. Continued monitoring is recommended.';
+    
+    const timeMessage = daysSinceLastMaliciousActivity !== undefined
+      ? `Last incident was ${daysSinceLastMaliciousActivity} days ago.`
+      : 'Incident timing unknown.';
+    
+    explanation = `No active threats detected. This wallet had past security incidents. ${timeMessage} Monitoring recommended.`;
+  }
+  // CASE 5: Fallback - treat as having historical compromise but uncertain status
+  else {
+    subStatus = 'NO_ACTIVE_RISK';
+    displayBadge = {
+      text: 'Previously Compromised (No Active Risk)',
+      variant: 'informational',
+      icon: 'info',
+      colorScheme: 'blue',
+    };
+    tooltipText = 'This wallet was compromised in the past but currently shows no active threats.';
+    explanation = 'No active threats detected. This wallet had past security incidents which appear resolved.';
+  }
+  
+  // Build resolution info
+  const resolutionInfo: CompromiseResolutionInfo = {
+    subStatus,
+    historical_compromise: hasHistoricalCompromise || historicalThreats.length > 0,
+    active_threats: activeThreats.length > 0,
+    compromise_resolved_at: subStatus === 'RESOLVED' ? new Date().toISOString() : undefined,
+    resolution: {
+      allApprovalsRevoked,
+      noActiveMaliciousContracts,
+      noRecentSweeperActivity,
+      noOngoingAutomatedOutflows,
+      daysSinceLastMaliciousActivity,
+      lastMaliciousActivityTimestamp,
+    },
+    displayBadge,
+    tooltipText,
+    explanation,
+  };
+  
+  return resolutionInfo;
+}
+
+/**
+ * Build historical compromise info from evidence
+ */
+export function buildHistoricalCompromiseInfo(
+  historicalThreats: CompromiseEvidence[],
+  activeThreats: CompromiseEvidence[],
+  chain: Chain
+): HistoricalCompromiseInfo {
+  const hasHistoricalCompromise = historicalThreats.length > 0;
+  const isCurrentlyActive = activeThreats.length > 0;
+  
+  // Convert evidence to incidents
+  const incidents = historicalThreats.map(ev => ({
+    type: mapEvidenceCodeToIncidentType(ev.code),
+    timestamp: ev.timestamp || new Date().toISOString(),
+    txHash: ev.relatedTxHash || '',
+    maliciousAddress: ev.relatedAddress || '',
+    maliciousContractName: undefined,
+    chain,
+    approvalStillActive: ev.isActiveThreat || false,
+    explanation: ev.description,
+  }));
+  
+  // Find remediation status
+  const allRevoked = historicalThreats.every(t => t.wasRemediated);
+  const lastMaliciousActivity = historicalThreats
+    .filter(t => t.timestamp)
+    .map(t => new Date(t.timestamp!).getTime())
+    .sort((a, b) => b - a)[0];
+  
+  const daysSinceLastIncident = lastMaliciousActivity
+    ? Math.floor((Date.now() - lastMaliciousActivity) / (24 * 60 * 60 * 1000))
+    : undefined;
+  
+  return {
+    hasHistoricalCompromise,
+    incidents,
+    isCurrentlyActive,
+    remediationStatus: {
+      allApprovalsRevoked: allRevoked,
+      noActiveDrainerAccess: !isCurrentlyActive,
+      noOngoingDrains: !activeThreats.some(t => t.code === 'SWEEPER_PATTERN'),
+      lastMaliciousActivity: lastMaliciousActivity ? new Date(lastMaliciousActivity).toISOString() : undefined,
+      daysSinceLastIncident,
+    },
+  };
+}
+
+function mapEvidenceCodeToIncidentType(code: CompromiseReasonCode): 'AIRDROP_DRAIN' | 'APPROVAL_EXPLOIT' | 'PHISHING' | 'SWEEPER_ATTACK' | 'UNKNOWN' {
+  switch (code) {
+    case 'AIRDROP_DRAIN':
+    case 'AIRDROP_FOLLOWED_BY_DRAIN':
+      return 'AIRDROP_DRAIN';
+    case 'MALICIOUS_APPROVAL':
+    case 'UNLIMITED_APPROVAL_TO_UNKNOWN':
+    case 'MULTIPLE_UNLIMITED_APPROVALS':
+      return 'APPROVAL_EXPLOIT';
+    case 'SWEEPER_PATTERN':
+    case 'SWEEPER_BOT_DETECTED':
+      return 'SWEEPER_ATTACK';
+    default:
+      return 'UNKNOWN';
+  }
+}
+
+// ============================================
 // EXPORTS
 // ============================================
 
@@ -1909,5 +2504,9 @@ export {
   isApprovalStillActive,
   classifyThreatTiming,
   detectAirdropDrainIncident,
+  // determineCompromiseResolution and buildHistoricalCompromiseInfo are exported inline
 };
+
+// Re-export address normalization for convenience
+export { normalizeAddress } from './drainer-activity-detector';
 

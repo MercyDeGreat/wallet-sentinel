@@ -128,8 +128,19 @@ export function calculateRiskScore(factors: RiskFactors): number {
 export function determineSecurityStatus(
   riskScore: number, 
   threats: DetectedThreat[],
-  behaviorAnalysis?: BehaviorAnalysisResult
+  behaviorAnalysis?: BehaviorAnalysisResult,
+  drainerOverrideActive?: boolean
 ): SecurityStatus {
+  // ============================================
+  // HARD OVERRIDE: ACTIVE_COMPROMISE_DRAINER
+  // ============================================
+  // If drainer override is active (from DrainerActivityDetector),
+  // this MUST return ACTIVE_COMPROMISE_DRAINER regardless of any other analysis.
+  // This cannot be bypassed or downgraded.
+  if (drainerOverrideActive) {
+    return 'ACTIVE_COMPROMISE_DRAINER';
+  }
+  
   // NEW: Check behavior analysis first
   if (behaviorAnalysis) {
     // If behavior shows NORMAL_USER or POWER_USER, don't flag as compromised
@@ -139,6 +150,12 @@ export function determineSecurityStatus(
         return 'SAFE';
       }
       return 'AT_RISK';
+    }
+    
+    // SECURITY FIX: Confirmed sweeper/drainer = ACTIVE_COMPROMISE_DRAINER
+    if (behaviorAnalysis.classification === 'CONFIRMED_SWEEPER' ||
+        behaviorAnalysis.classification === 'CONFIRMED_DRAINER') {
+      return 'ACTIVE_COMPROMISE_DRAINER';
     }
     
     // Only show COMPROMISED if confidence is high
@@ -1073,6 +1090,15 @@ export function generateAnalysisSummary(
   const safeThreats = Array.isArray(threats) ? threats.filter(t => t != null) : [];
   const safeApprovals = Array.isArray(approvals) ? approvals.filter(a => a != null) : [];
   
+  // ============================================
+  // ACTIVE_COMPROMISE_DRAINER - HIGHEST PRIORITY
+  // ============================================
+  if (status === 'ACTIVE_COMPROMISE_DRAINER') {
+    return 'CRITICAL: ACTIVE WALLET DRAINER DETECTED. ' +
+           'This wallet exhibits active drainer behavior patterns (immediate fund forwarding, token sweeps, drain routing). ' +
+           'DO NOT send any funds to this address. This classification CANNOT be downgraded until 90+ days of no activity.';
+  }
+  
   // NEW: Include behavioral analysis in summary
   if (behaviorAnalysis) {
     if (behaviorAnalysis.classification === 'NORMAL_USER') {
@@ -1103,6 +1129,12 @@ export function generateAnalysisSummary(
   if (status === 'SAFE') {
     return 'No significant security threats detected. Your wallet appears to be in good standing. ' +
            'Continue practicing safe wallet hygiene.';
+  }
+  
+  if (status === 'PREVIOUSLY_COMPROMISED' || status === 'PREVIOUSLY_COMPROMISED_NO_ACTIVITY') {
+    return 'This wallet was previously compromised but currently shows no active threats. ' +
+           'All malicious access appears to have been revoked. ' +
+           'The wallet can be used with caution but cannot be classified as fully Safe.';
   }
 
   if (status === 'AT_RISK') {

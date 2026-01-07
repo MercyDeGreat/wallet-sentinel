@@ -58,6 +58,8 @@ import {
 import { EXCHANGE_HOT_WALLETS } from '../detection/transaction-labeler';
 import {
   analyzeWalletCompromise,
+  determineCompromiseResolution,
+  buildHistoricalCompromiseInfo,
   type TransactionForAnalysis,
   type ApprovalForAnalysis,
   type TokenTransferForAnalysis,
@@ -91,6 +93,11 @@ import {
   isStandardMintMethod,
   isPaidMintTransaction,
 } from '../detection/safe-contracts';
+import {
+  detectDrainerActivity,
+  normalizeAddress,
+} from '../detection/drainer-activity-detector';
+import { isKnownDrainer, getDrainerType } from '../detection/drainer-addresses';
 
 // ============================================
 // INTERFACES
@@ -225,6 +232,37 @@ export class EVMAnalyzer {
         title: '⚠️ KNOWN DRAINER FUND RECIPIENT',
         description: 'This address is known to receive stolen funds from drainer contracts. It is associated with theft operations.',
         technicalDetails: `This address has been identified as receiving funds from confirmed drainer contracts.`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: [normalizedAddress],
+        relatedTransactions: [],
+        ongoingRisk: true,
+      });
+    }
+    
+    // ============================================
+    // HARD OVERRIDE: Known Drainer Database Check
+    // ============================================
+    // If the address is in the known drainer database, it MUST be classified
+    // as ACTIVE_COMPROMISE_DRAINER regardless of behavioral analysis.
+    // This prevents false negatives where drainers evade behavioral detection.
+    const isInKnownDrainerDb = isKnownDrainer(normalizedAddress);
+    const drainerType = getDrainerType(normalizedAddress);
+    if (isInKnownDrainerDb) {
+      console.log(`[ANALYZE] *** KNOWN DRAINER DETECTED *** ${normalizedAddress} is in drainer database`);
+      console.log(`[ANALYZE] Drainer type: ${drainerType || 'Unknown'}`);
+      threats.push({
+        id: `known-drainer-db-${Date.now()}`,
+        type: 'WALLET_DRAINER',
+        severity: 'CRITICAL',
+        title: '🚨 CONFIRMED ACTIVE DRAINER',
+        description: `This wallet is in the verified drainer database. It has been confirmed to participate in fund draining operations. ` +
+                     `Classification: ${drainerType || 'Active Drainer'}. ` +
+                     `This wallet MUST be classified as ACTIVE_COMPROMISE_DRAINER and cannot be downgraded.`,
+        technicalDetails: `Drainer Type: ${drainerType || 'Unknown'}\n` +
+                          `Database Match: CONFIRMED\n` +
+                          `Status: ACTIVE_COMPROMISE_DRAINER (HARD OVERRIDE)\n\n` +
+                          `This classification overrides all behavioral analysis and cannot be changed until ` +
+                          `the address is removed from the verified drainer database.`,
         detectedAt: new Date().toISOString(),
         relatedAddresses: [normalizedAddress],
         relatedTransactions: [],
@@ -395,12 +433,102 @@ export class EVMAnalyzer {
     const riskScore = this.calculateRiskScore(threats, analyzedApprovals);
     const riskLevel = this.determineRiskLevel(riskScore, threats);
     
-    // USE COMPROMISE ANALYSIS FOR SECURITY STATUS (more conservative)
-    const securityStatus = this.determineSecurityStatusConservative(
-      riskScore,
-      threats,
-      compromiseAnalysis
+    // ============================================
+    // DRAINER ACTIVITY DETECTION (HARD OVERRIDE)
+    // ============================================
+    // CRITICAL SECURITY FIX: Wallets with active drainer behavior MUST be
+    // classified as ACTIVE_COMPROMISE_DRAINER, overriding ALL other states.
+    // This prevents false negatives where drainers are marked as "Safe" or
+    // "Previously Compromised (Resolved)".
+    
+    const drainerDetectionResult = detectDrainerActivity(
+      normalizedAddress,
+      this.chain,
+      transactions.map(tx => ({
+        hash: tx.hash,
+        from: tx.from,
+        to: tx.to,
+        value: tx.value,
+        input: tx.input,
+        timestamp: tx.timestamp,
+        blockNumber: tx.blockNumber,
+        methodId: tx.methodId,
+        isError: tx.isError,
+        gasUsed: tx.gasUsed,
+      })),
+      tokenTransfers.map(tt => ({
+        from: tt.from,
+        to: tt.to,
+        value: tt.value,
+        hash: tt.hash,
+        timestamp: tt.timestamp,
+        tokenSymbol: tt.tokenSymbol,
+        tokenAddress: tt.tokenAddress,
+      })),
+      approvalEvents.map(a => ({
+        token: a.token,
+        tokenSymbol: a.tokenSymbol || 'Unknown',
+        spender: a.spender,
+        owner: a.owner || normalizedAddress,
+        amount: a.amount || '0',
+        isUnlimited: BigInt(a.amount || '0') > BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'),
+        timestamp: a.timestamp,
+        transactionHash: a.transactionHash || '',
+        blockNumber: a.blockNumber,
+      })),
+      Math.floor(Date.now() / 1000)
     );
+    
+    // ============================================
+    // HARD OVERRIDE: Drainer Detection
+    // ============================================
+    // If drainer activity is detected OR the wallet is in the known drainer database,
+    // the status MUST be ACTIVE_COMPROMISE_DRAINER. This cannot be overridden.
+    let securityStatus: SecurityStatus;
+    
+    // PRIORITY 1: Known drainer database check (highest priority)
+    if (isInKnownDrainerDb) {
+      console.log(`[SECURITY] *** HARD OVERRIDE (KNOWN DRAINER DATABASE) ***`);
+      console.log(`[SECURITY] ${normalizedAddress} is in verified drainer database`);
+      console.log(`[SECURITY] Drainer type: ${drainerType || 'Unknown'}`);
+      console.log(`[SECURITY] Status FORCED to ACTIVE_COMPROMISE_DRAINER - cannot be downgraded`);
+      securityStatus = 'ACTIVE_COMPROMISE_DRAINER';
+    }
+    // PRIORITY 2: Behavioral drainer detection
+    else if (drainerDetectionResult.shouldOverride) {
+      // Extract signal types from detectedSignals array
+      const signalTypes = drainerDetectionResult.detectedSignals.map(s => s.signal);
+      const signalHashes = drainerDetectionResult.detectedSignals.map(s => s.txHash);
+      const relatedAddrs = drainerDetectionResult.detectedSignals.flatMap(s => s.relatedAddresses);
+      
+      console.log(`[SECURITY] HARD OVERRIDE: Drainer activity detected for ${normalizedAddress}`);
+      console.log(`[SECURITY] Override reason: ${drainerDetectionResult.overrideReason}`);
+      console.log(`[SECURITY] Drainer signals: ${signalTypes.join(', ')}`);
+      console.log(`[SECURITY] Recency: ${drainerDetectionResult.recency.recency} (confidence multiplier: ${drainerDetectionResult.recency.confidenceMultiplier})`);
+      console.log(`[SECURITY] Days since last activity: ${drainerDetectionResult.recency.daysSinceLastActivity}`);
+      securityStatus = 'ACTIVE_COMPROMISE_DRAINER';
+      
+      // Add the drainer detection as a critical threat
+      threats.push({
+        id: `drainer-override-${Date.now()}`,
+        type: 'WALLET_DRAINER',
+        severity: 'CRITICAL',
+        title: 'Active Wallet Drainer Detected',
+        description: drainerDetectionResult.overrideReason || 'This wallet exhibits active drainer behavior patterns.',
+        technicalDetails: `Drainer signals detected:\n${signalTypes.map(s => `• ${s}`).join('\n')}\n\nRecency: ${drainerDetectionResult.recency.recency} (last activity: ${drainerDetectionResult.recency.daysSinceLastActivity} days ago)`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: [...new Set(relatedAddrs)],
+        relatedTransactions: signalHashes,
+        ongoingRisk: true,
+      });
+    } else {
+      // USE COMPROMISE ANALYSIS FOR SECURITY STATUS (more conservative)
+      securityStatus = this.determineSecurityStatusConservative(
+        riskScore,
+        threats,
+        compromiseAnalysis
+      );
+    }
     
     const suspiciousTransactions = this.buildSuspiciousTransactions(transactions, threats);
     const recommendations = this.generateRecommendations(threats, analyzedApprovals, securityStatus);
@@ -410,6 +538,60 @@ export class EVMAnalyzer {
     const classificationReason = this.generateClassificationReason(classification, directionalAnalysis);
 
     console.log(`[ANALYZE] Completed. Status: ${securityStatus}, Role: ${classification.role}, Score: ${riskScore}, Threats: ${threats.length}`);
+
+    // ============================================
+    // DETERMINE COMPROMISE RESOLUTION SUB-STATUS
+    // ============================================
+    // Provides granular distinction between resolved and monitored historical compromise
+    
+    const activeThreats = compromiseAnalysis.evidence.filter(e => e.isActiveThreat);
+    const historicalThreats = compromiseAnalysis.evidence.filter(e => e.isHistorical);
+    const hasHistoricalCompromise = historicalThreats.length > 0 || 
+      securityStatus === 'PREVIOUSLY_COMPROMISED';
+    
+    // Get last malicious activity timestamp
+    const lastMaliciousTimestamp = compromiseAnalysis.evidence
+      .filter(e => e.timestamp)
+      .map(e => e.timestamp!)
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+    
+    // Build compromise resolution info
+    // Map approvalEvents to ApprovalForAnalysis format
+    const UNLIMITED_THRESHOLD = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+    const approvalsForAnalysis = approvalEvents.map(a => ({
+      token: a.token,
+      tokenSymbol: a.tokenSymbol,
+      spender: a.spender,
+      owner: a.owner,
+      amount: a.amount,
+      isUnlimited: BigInt(a.amount || '0') > UNLIMITED_THRESHOLD,
+      timestamp: a.timestamp,
+      transactionHash: a.transactionHash,
+      blockNumber: a.blockNumber,
+    }));
+    
+    const compromiseResolution = determineCompromiseResolution(
+      hasHistoricalCompromise,
+      activeThreats,
+      historicalThreats,
+      approvalsForAnalysis,
+      lastMaliciousTimestamp
+    );
+    
+    // Build historical compromise info
+    const historicalCompromise = buildHistoricalCompromiseInfo(
+      historicalThreats,
+      activeThreats,
+      this.chain
+    );
+    
+    // Generate summary with updated copy based on sub-status
+    const summary = this.generateSummaryWithSubStatus(
+      securityStatus,
+      threats,
+      analyzedApprovals,
+      compromiseResolution
+    );
 
     return {
       address: normalizedAddress,
@@ -426,7 +608,7 @@ export class EVMAnalyzer {
       classificationReason,
       
       // Detailed analysis
-      summary: this.generateSummary(securityStatus, threats, analyzedApprovals),
+      summary,
       detectedThreats: threats,
       approvals: analyzedApprovals,
       suspiciousTransactions,
@@ -436,6 +618,12 @@ export class EVMAnalyzer {
       
       // Directional analysis for transparency
       directionalAnalysis,
+      
+      // ============================================
+      // COMPROMISE SUB-STATUS (NEW)
+      // ============================================
+      compromiseResolution,
+      historicalCompromise,
     };
   }
 
@@ -3380,6 +3568,37 @@ export class EVMAnalyzer {
       return `🚨 CRITICAL: This wallet shows signs of compromise. ${drainerThreats.length} drainer/key compromise incident(s) detected. Immediate action required.`;
     }
     return `🚨 CRITICAL: ${safeThreats.length} critical security threat(s) detected. Review immediately.`;
+  }
+
+  /**
+   * Generate summary with sub-status awareness for previously compromised wallets.
+   * Uses the updated copy as per requirements:
+   * - Replace "Cannot confirm wallet safety" with clear, non-alarming language
+   * - Distinguish between resolved and no-active-risk states
+   */
+  private generateSummaryWithSubStatus(
+    status: SecurityStatus,
+    threats: DetectedThreat[],
+    approvals: TokenApproval[],
+    compromiseResolution: import('@/types').CompromiseResolutionInfo
+  ): string {
+    // For resolved or no-active-risk states, use the new copy
+    if (compromiseResolution.subStatus === 'RESOLVED') {
+      const days = compromiseResolution.resolution.daysSinceLastMaliciousActivity;
+      const timeMsg = days !== undefined ? ` (${days} days ago)` : '';
+      return `No active threats detected. This wallet had past security incidents${timeMsg} which appear resolved. All known malicious access has been revoked.`;
+    }
+    
+    if (compromiseResolution.subStatus === 'NO_ACTIVE_RISK') {
+      return `No active threats detected. This wallet had past security incidents which appear resolved. Continued monitoring recommended.`;
+    }
+    
+    if (compromiseResolution.subStatus === 'NONE') {
+      return 'No risk indicators detected. Wallet appears safe based on available data.';
+    }
+    
+    // For active threats, use the standard summary
+    return this.generateSummary(status, threats, approvals);
   }
 
   private generateRecommendations(threats: DetectedThreat[], approvals: TokenApproval[], status: SecurityStatus): SecurityRecommendation[] {

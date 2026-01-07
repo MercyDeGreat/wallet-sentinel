@@ -233,6 +233,18 @@ body {
   @apply bg-status-danger animate-pulse-danger;
 }
 
+.status-dot-info {
+  @apply bg-blue-400;
+}
+
+.status-dot-neutral {
+  @apply bg-gray-400;
+}
+
+.status-dot-historical {
+  @apply bg-blue-400 opacity-75;
+}
+
 /* Gradient text */
 .gradient-text {
   @apply bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-cyan-400;

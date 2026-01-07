@@ -50,6 +50,8 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
   // ============================================
   // HISTORICAL VS ACTIVE THREAT STYLING
   // ============================================
+  // Historical threats are INFORMATIONAL - they do NOT increase risk score
+  // They should be styled in a neutral/blue way, NOT red/warning
   const isHistorical = threat?.isHistorical || 
                        threat?.category === 'HISTORICAL_EXPOSURE' || 
                        threat?.category === 'RESOLVED' ||
@@ -57,6 +59,9 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
                        threat?.excludeFromRiskScore === true;
   
   const isResolved = threat?.category === 'RESOLVED' || threat?.approvalRevoked === true;
+  
+  // Determine if this is a "no active risk" historical threat
+  const isNoActiveRisk = isHistorical && !threat?.ongoingRisk;
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -85,19 +90,28 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
   };
 
   // Get border color based on status
+  // IMPORTANT: Historical/resolved threats use BLUE/neutral colors, NOT red/warning
   const getBorderClass = () => {
     if (isResolved) return 'border-l-4 border-l-green-500/50'; // Green for resolved
-    if (isHistorical) return 'border-l-4 border-l-gray-400/30'; // Gray for historical
+    if (isNoActiveRisk) return 'border-l-4 border-l-blue-500/30'; // Blue for no active risk
+    if (isHistorical) return 'border-l-4 border-l-blue-500/20'; // Blue for historical
     if (threat.severity === 'CRITICAL') return 'border-l-4 border-l-status-danger';
     if (threat.severity === 'HIGH') return 'border-l-4 border-l-orange-500';
+    return '';
+  };
+  
+  // Get background class for historical threats
+  const getBackgroundClass = () => {
+    if (isResolved) return 'bg-green-500/5';
+    if (isNoActiveRisk) return 'bg-blue-500/5';
     return '';
   };
 
   return (
     <motion.div
       layout
-      className={`glass-card rounded-xl overflow-hidden ${getBorderClass()} ${
-        isHistorical ? 'opacity-75' : '' // Reduce opacity for historical
+      className={`glass-card rounded-xl overflow-hidden ${getBorderClass()} ${getBackgroundClass()} ${
+        isHistorical && !isResolved ? 'opacity-85' : '' // Slightly reduce opacity for historical
       }`}
     >
       {/* Header */}
@@ -116,13 +130,17 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
             <h3 className={`font-display font-semibold ${isHistorical ? 'text-sentinel-muted' : 'text-sentinel-text'}`}>
               {threat.displayLabel || threat.title}
             </h3>
-            {/* Status badges */}
+            {/* Status badges - Blue/neutral for historical, Red for active */}
             {isResolved ? (
               <span className="px-2 py-0.5 text-xs bg-green-500/10 text-green-400 rounded-full border border-green-500/20">
                 ✓ Resolved
               </span>
+            ) : isNoActiveRisk ? (
+              <span className="px-2 py-0.5 text-xs bg-blue-500/10 text-blue-400 rounded-full border border-blue-500/20">
+                No Active Risk
+              </span>
             ) : isHistorical ? (
-              <span className="px-2 py-0.5 text-xs bg-gray-500/10 text-gray-400 rounded-full border border-gray-500/20">
+              <span className="px-2 py-0.5 text-xs bg-blue-500/10 text-blue-400 rounded-full border border-blue-500/20">
                 Historical
               </span>
             ) : threat.ongoingRisk && (
@@ -137,8 +155,8 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
           <div className="flex items-center gap-4 mt-2 flex-wrap">
             {!isHistorical && <SeverityBadge severity={threat.severity} />}
             {isHistorical && (
-              <span className="text-xs text-gray-500 bg-gray-500/10 px-2 py-0.5 rounded">
-                No Risk Score Impact
+              <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded">
+                ℹ️ Informational Only
               </span>
             )}
             <span className="text-xs text-sentinel-muted">{typeInfo.label}</span>

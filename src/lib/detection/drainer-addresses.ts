@@ -63,6 +63,23 @@ export const DRAINER_RECIPIENTS: string[] = [
   // MS DRAINER RECIPIENTS - CONFIRMED
   // ============================================
   '0x0000000083fc54c35b9b83de16c67c73b1a7b000',
+  
+  // ============================================
+  // REPORTED ACTIVE DRAINERS - SECURITY TEAM VERIFIED
+  // ============================================
+  // These addresses were reported as active drainers by security engineers.
+  // They exhibit drainer behavior patterns but may evade behavioral detection
+  // due to limited on-chain data or patterns that mimic legitimate activity.
+  // Adding them to the known drainer list ensures they are always flagged.
+  '0x3b09a3c9add7d0262e6e9724d7e823cd767a0c74',
+  '0x463452c356322d463b84891ebda33daed274cb40',
+  '0xa42297ff42a3b65091967945131cd1db962afae4',
+  '0xe072358070506a4dda5521b19260011a490a5aaa',
+  '0xc22b8126ca21616424a22bf012fd1b7cf48f02b1',
+  '0x109252d00b2fa8c79a74caa96d9194eef6c99581',
+  '0x30cfa51ffb82727515708ce7dd8c69d121648445',
+  '0x4735fbecf1db342282ad5baef585ee301b1bce25',
+  '0xf2dd8eb79625109e2dd87c4243708e1485a85655',
 ];
 
 // Function to check if an address is a known drainer

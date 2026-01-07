@@ -15,11 +15,12 @@ import {
   Layers,
   Info,
 } from 'lucide-react';
-import { WalletAnalysisResult, SecurityStatus, RiskLevel } from '@/types';
+import { WalletAnalysisResult, SecurityStatus, RiskLevel, CompromiseSubStatus } from '@/types';
 import { ThreatCard } from './ThreatCard';
 import { ApprovalsDashboard } from './ApprovalsDashboard';
 import { RecoveryPlan } from './RecoveryPlan';
 import { EducationalPanel } from './EducationalPanel';
+import { CompromiseStatusBadge, CompromiseStatusCard } from './CompromiseStatusBadge';
 
 interface SecurityDashboardProps {
   result: WalletAnalysisResult;
@@ -64,6 +65,7 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
             status={result.securityStatus} 
             chain={result.chain}
             chainAwareStatus={result.chainAwareStatus}
+            compromiseSubStatus={result.compromiseResolution?.subStatus}
           />
 
           {/* Wallet Info */}
@@ -295,25 +297,28 @@ function OverviewTab({
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* PREVIOUSLY_COMPROMISED Banner - Historical compromise, no active threat */}
-      {result?.securityStatus === 'PREVIOUSLY_COMPROMISED' && (
+      {/* Uses new sub-status system: RESOLVED or NO_ACTIVE_RISK */}
+      {result?.securityStatus === 'PREVIOUSLY_COMPROMISED' && result?.compromiseResolution && (
         <div className="lg:col-span-2">
-          <div className="glass-card rounded-xl p-6 border-l-4 border-amber-500 bg-amber-500/5">
-            <h3 className="font-display font-semibold text-lg mb-3 flex items-center gap-2 text-amber-400">
-              <Clock className="w-5 h-5" />
-              Previously Compromised - No Active Threat
+          <CompromiseStatusCard resolution={result.compromiseResolution} />
+        </div>
+      )}
+      
+      {/* Fallback for PREVIOUSLY_COMPROMISED without resolution info */}
+      {result?.securityStatus === 'PREVIOUSLY_COMPROMISED' && !result?.compromiseResolution && (
+        <div className="lg:col-span-2">
+          <div className="glass-card rounded-xl p-6 border-l-4 border-blue-500 bg-blue-500/5">
+            <h3 className="font-display font-semibold text-lg mb-3 flex items-center gap-2 text-blue-400">
+              <Shield className="w-5 h-5" />
+              Previously Compromised (No Active Risk)
             </h3>
             <p className="text-sentinel-muted mb-4">
-              This wallet experienced a security incident in the past, but all malicious access has been revoked.
-              The wallet is currently safe to use with normal caution.
+              No active threats detected. This wallet had past security incidents which appear resolved.
             </p>
             <div className="bg-sentinel-surface rounded-lg p-4 space-y-2">
               <div className="flex items-center gap-2 text-sm">
                 <CheckCircle className="w-4 h-4 text-status-safe" />
-                <span className="text-sentinel-muted">All malicious approvals revoked</span>
-              </div>
-              <div className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-status-safe" />
-                <span className="text-sentinel-muted">No active drainer access</span>
+                <span className="text-sentinel-muted">No active malicious access detected</span>
               </div>
               <div className="flex items-center gap-2 text-sm">
                 <CheckCircle className="w-4 h-4 text-status-safe" />
@@ -321,8 +326,34 @@ function OverviewTab({
               </div>
             </div>
             <p className="text-xs text-sentinel-muted mt-3">
-              💡 Tip: Continue to monitor your approvals regularly and revoke any suspicious permissions.
+              ℹ️ This wallet was compromised in the past but currently shows no active threats.
             </p>
+          </div>
+        </div>
+      )}
+      
+      {/* ACTIVE_COMPROMISE_DRAINER Banner - Known drainer detected */}
+      {result?.securityStatus === 'ACTIVE_COMPROMISE_DRAINER' && (
+        <div className="lg:col-span-2">
+          <div className="glass-card rounded-xl p-6 border-l-4 border-red-500 bg-red-600/20">
+            <h3 className="font-display font-semibold text-lg mb-3 flex items-center gap-2 text-red-400">
+              <AlertCircle className="w-5 h-5" />
+              🚨 ACTIVE WALLET DRAINER DETECTED
+            </h3>
+            <p className="text-text-secondary mb-4">
+              <strong className="text-red-400">This wallet is a CONFIRMED active drainer.</strong> It has been 
+              verified by security researchers as participating in fund theft operations. This classification 
+              cannot be downgraded and will remain until the address is removed from the drainer database.
+            </p>
+            <div className="bg-red-900/20 rounded-lg p-4 border border-red-500/30">
+              <h4 className="font-semibold text-red-400 mb-2">⚠️ Critical Warning</h4>
+              <ul className="list-disc list-inside text-sm text-text-secondary space-y-1">
+                <li><strong>DO NOT</strong> send any funds to this address</li>
+                <li><strong>DO NOT</strong> approve any transactions from this address</li>
+                <li><strong>DO NOT</strong> interact with any contracts associated with this address</li>
+                <li>If you have already interacted, revoke all approvals immediately</li>
+              </ul>
+            </div>
           </div>
         </div>
       )}
@@ -496,14 +527,27 @@ function OverviewTab({
 function StatusBadge({ 
   status, 
   chain,
-  chainAwareStatus 
+  chainAwareStatus,
+  compromiseSubStatus,
 }: { 
   status: SecurityStatus;
   chain?: string;
   chainAwareStatus?: import('@/types').ChainAwareSecurityLabel;
+  compromiseSubStatus?: CompromiseSubStatus;
 }) {
   // For Solana, use chain-aware labels to avoid false "SAFE" claims
   const isSolana = chain === 'solana';
+  
+  // Determine the label for PREVIOUSLY_COMPROMISED based on sub-status
+  const getPreviouslyCompromisedLabel = () => {
+    if (compromiseSubStatus === 'RESOLVED') {
+      return 'PREVIOUSLY COMPROMISED (RESOLVED)';
+    }
+    if (compromiseSubStatus === 'NO_ACTIVE_RISK') {
+      return 'PREVIOUSLY COMPROMISED (NO ACTIVE RISK)';
+    }
+    return 'PREVIOUSLY COMPROMISED';
+  };
   
   const config: Record<SecurityStatus, {
     icon: typeof CheckCircle;
@@ -524,12 +568,12 @@ function StatusBadge({
       dot: isSolana ? 'status-dot-info' : 'status-dot-safe',
     },
     PREVIOUSLY_COMPROMISED: {
-      icon: Shield, // Shield with history indicator
-      label: 'PREVIOUSLY COMPROMISED',
-      bg: 'bg-amber-500/10',
-      border: 'border-amber-500/30',
-      text: 'text-amber-400',
-      dot: 'status-dot-historical',
+      icon: Shield, // Shield with history indicator - NOT danger icon
+      label: getPreviouslyCompromisedLabel(),
+      bg: 'bg-blue-500/10',       // Blue, NOT amber/yellow/red - informational
+      border: 'border-blue-500/30',
+      text: 'text-blue-400',       // Blue text - neutral/informational
+      dot: 'status-dot-info',      // Info dot, not warning
     },
     POTENTIALLY_COMPROMISED: {
       icon: AlertTriangle,
@@ -561,6 +605,14 @@ function StatusBadge({
       bg: 'bg-status-danger-bg',
       border: 'border-status-danger/30',
       text: 'text-status-danger',
+      dot: 'status-dot-danger',
+    },
+    ACTIVE_COMPROMISE_DRAINER: {
+      icon: AlertCircle,
+      label: '🚨 ACTIVE DRAINER DETECTED',
+      bg: 'bg-red-600/20',
+      border: 'border-red-500/50',
+      text: 'text-red-400',
       dot: 'status-dot-danger',
     },
     INCOMPLETE_DATA: {
@@ -660,10 +712,17 @@ function getStatusBorderClass(status: SecurityStatus): string {
   switch (status) {
     case 'SAFE':
       return 'border-l-4 border-l-status-safe';
+    case 'PREVIOUSLY_COMPROMISED':
+      // Blue border - informational, NOT warning/danger
+      return 'border-l-4 border-l-blue-500';
     case 'POTENTIALLY_COMPROMISED':
       return 'border-l-4 border-l-orange-500';
     case 'AT_RISK':
       return 'border-l-4 border-l-status-warning';
+    case 'ACTIVE_COMPROMISE_DRAINER':
+      // Red border - CRITICAL, this is an active drainer
+      return 'border-l-4 border-l-red-500';
+    case 'ACTIVELY_COMPROMISED':
     case 'COMPROMISED':
       return 'border-l-4 border-l-status-danger';
     default:

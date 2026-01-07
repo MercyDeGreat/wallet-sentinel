@@ -17,14 +17,216 @@ export type Chain = 'ethereum' | 'base' | 'bnb' | 'solana';
 // CRITICAL: Distinguish between HISTORICAL and ACTIVE compromise
 // - Historical: Past exploit occurred but all malicious access revoked
 // - Active: Ongoing threat with active approvals or drainer access
+//
+// HARD RULE (2024-01 Security Fix):
+// ACTIVE_COMPROMISE_DRAINER MUST override ALL other statuses when ANY
+// drainer behavior is detected within the last 90 days. This prevents
+// false negatives where active drainers are incorrectly labeled as "Safe"
+// or "Previously Compromised (Resolved)".
 export type SecurityStatus = 
   | 'SAFE'                      // No risk indicators, no historical compromise
-  | 'PREVIOUSLY_COMPROMISED'    // Historical exploit, but NO active threat (all revoked)
+  | 'PREVIOUSLY_COMPROMISED'    // Historical exploit, NO active threat, ≥90 days clean
+  | 'PREVIOUSLY_COMPROMISED_NO_ACTIVITY' // Historical compromise, ZERO drainer signals for ≥90 days
   | 'POTENTIALLY_COMPROMISED'   // At least one concrete risk signal exists
   | 'AT_RISK'                   // Active risk indicators present
   | 'ACTIVELY_COMPROMISED'      // Confirmed ACTIVE compromise (ongoing threat)
+  | 'ACTIVE_COMPROMISE_DRAINER' // ** HARD OVERRIDE ** Active wallet drainer detected (<90 days activity)
   | 'COMPROMISED'               // Legacy: maps to ACTIVELY_COMPROMISED
   | 'INCOMPLETE_DATA';          // Analysis could not complete (RPC failure, partial history)
+
+// ============================================
+// COMPROMISE SUB-STATUS SYSTEM
+// ============================================
+// Provides granular distinction between resolved and monitored historical compromise
+// These are INFORMATIONAL only - they do NOT increase risk score
+//
+// SECURITY FIX (2024-01): Added ACTIVE_DRAINER_DETECTED which OVERRIDES all other sub-statuses
+
+export type CompromiseSubStatus = 
+  | 'RESOLVED'                  // Historical compromise with all threats remediated (≥90 days)
+  | 'NO_ACTIVE_RISK'           // Historical compromise, no active threats, but should be monitored
+  | 'ACTIVE_THREAT'            // Currently compromised with active threat vectors
+  | 'ACTIVE_DRAINER_DETECTED'  // ** HARD OVERRIDE ** Active drainer behavior detected (<90 days)
+  | 'NONE';                    // No compromise history
+
+// ============================================
+// RECENCY-AWARE THREAT URGENCY LEVELS
+// ============================================
+// Detection confidence MUST scale with time since last activity.
+// Any activity <90 days = ACTIVE, not historical.
+
+export type DrainerActivityRecency = 
+  | 'CRITICAL'   // <24h activity - IMMEDIATE threat
+  | 'HIGH'       // <7d activity - HIGH priority threat
+  | 'MEDIUM'     // <30d activity - MEDIUM priority, still ACTIVE
+  | 'LOW'        // <90d activity - LOW but STILL ACTIVE (not historical)
+  | 'HISTORICAL' // ≥90d since last activity - MAY be considered historical
+  | 'NONE';      // No drainer activity detected
+
+export interface DrainerActivityRecencyInfo {
+  recency: DrainerActivityRecency;
+  daysSinceLastActivity: number;
+  lastActivityTimestamp?: string;
+  lastActivityTxHash?: string;
+  isActive: boolean;  // TRUE if <90 days, FALSE if ≥90 days
+  confidenceMultiplier: number; // 1.0 for CRITICAL, decreasing to 0.3 for LOW
+}
+
+// ============================================
+// DRAINER BEHAVIOR SIGNALS
+// ============================================
+// Any of these signals within 90 days = ACTIVE_COMPROMISE_DRAINER
+
+export type DrainerBehaviorSignal =
+  | 'IMMEDIATE_OUTBOUND_TRANSFER'    // Outbound transfer within seconds of inbound
+  | 'GAS_FUNDED_EXECUTION'           // Gas-funded third-party transaction execution
+  | 'APPROVAL_RAPID_DRAIN'           // Token approval followed by rapid balance drain
+  | 'ERC20_SWEEP_PATTERN'            // ERC20 sweep to external address
+  | 'ERC721_SWEEP_PATTERN'           // ERC721 (NFT) sweep pattern
+  | 'ERC1155_SWEEP_PATTERN'          // ERC1155 sweep pattern
+  | 'DRAIN_TO_AGGREGATION_HUB'       // Drain routing to known aggregation/laundering hub
+  | 'MULTI_TOKEN_ZEROING'            // Multiple token balances zeroed rapidly
+  | 'AUTOMATED_SWEEPER_BEHAVIOR';    // Automated sweeper bot pattern
+
+export interface DrainerBehaviorDetection {
+  signal: DrainerBehaviorSignal;
+  detectedAt: string;       // ISO timestamp
+  txHash: string;           // Transaction hash where detected
+  confidence: number;       // 0-100
+  details: string;          // Human-readable description
+  relatedAddresses: string[]; // Related addresses involved
+}
+
+// ============================================
+// STATUS PRIORITY (for sorting/display)
+// ============================================
+// Higher priority = more severe
+// Previously compromised (Resolved/No Active Risk) does NOT increase risk score
+// These are purely informational badges
+//
+// CRITICAL: ACTIVE_COMPROMISE_DRAINER has HIGHEST priority (110)
+// It MUST override all other statuses when active drainer behavior is detected.
+export const SECURITY_STATUS_PRIORITY: Record<SecurityStatus, number> = {
+  'ACTIVE_COMPROMISE_DRAINER': 110, // ** HIGHEST ** Active drainer - NEVER downgrade
+  'ACTIVELY_COMPROMISED': 100,  // Most severe - immediate action required
+  'COMPROMISED': 100,           // Legacy alias
+  'AT_RISK': 80,                // Active risk indicators
+  'POTENTIALLY_COMPROMISED': 60, // Concrete risk signal exists
+  'PREVIOUSLY_COMPROMISED': 20, // Historical only - NO active risk (≥90 days clean)
+  'PREVIOUSLY_COMPROMISED_NO_ACTIVITY': 15, // Historical, verified ≥90 days no activity
+  'INCOMPLETE_DATA': 10,        // Analysis incomplete
+  'SAFE': 0,                    // No issues
+};
+
+// ============================================
+// BACKWARD COMPATIBILITY: LEGACY STATUS MIGRATION
+// ============================================
+// When re-analyzing a wallet previously marked as "COMPROMISED",
+// the system automatically re-evaluates using the new sub-status system:
+// - If no active threats → PREVIOUSLY_COMPROMISED (Resolved or No Active Risk)
+// - If active threats remain → ACTIVELY_COMPROMISED
+// This migration happens automatically on every fresh analysis.
+
+/**
+ * Migrate legacy COMPROMISED status to new status system.
+ * Used for backward compatibility when displaying old results.
+ * 
+ * SECURITY FIX (2024-01): If drainerOverride indicates active drainer,
+ * ALWAYS return ACTIVE_COMPROMISE_DRAINER regardless of other factors.
+ */
+export function migrateLegacyStatus(
+  status: SecurityStatus,
+  hasActiveThreats: boolean,
+  drainerOverride?: DrainerOverrideResult
+): SecurityStatus {
+  // HARD OVERRIDE: Drainer detection supersedes all other logic
+  if (drainerOverride?.shouldOverride) {
+    return 'ACTIVE_COMPROMISE_DRAINER';
+  }
+  
+  if (status === 'COMPROMISED') {
+    return hasActiveThreats ? 'ACTIVELY_COMPROMISED' : 'PREVIOUSLY_COMPROMISED';
+  }
+  return status;
+}
+
+// ============================================
+// DRAINER HARD OVERRIDE RESULT
+// ============================================
+// This is the OUTPUT of the DrainerActivityDetector.
+// If `shouldOverride` is TRUE, the classification MUST be ACTIVE_COMPROMISE_DRAINER
+// regardless of any other analysis results.
+//
+// SECURITY RULE: FALSE NEGATIVES ARE WORSE THAN FALSE POSITIVES HERE.
+
+export interface DrainerOverrideResult {
+  // If TRUE, status MUST be ACTIVE_COMPROMISE_DRAINER - no exceptions
+  shouldOverride: boolean;
+  
+  // The signals that triggered the override
+  detectedSignals: DrainerBehaviorDetection[];
+  
+  // Recency information
+  recency: DrainerActivityRecencyInfo;
+  
+  // Overall confidence in drainer detection (0-100)
+  confidence: number;
+  
+  // Can this wallet ever be marked SAFE? FALSE if any drainer signal detected <90d
+  canEverBeSafe: boolean;
+  
+  // Can this wallet be marked PREVIOUSLY_COMPROMISED? Only if ≥90d no activity
+  canBePreviouslyCompromised: boolean;
+  
+  // Human-readable explanation of why override was triggered
+  overrideReason: string;
+  
+  // Explicit list of conditions that MUST ALL be true to downgrade
+  downgradeBlockers: string[];
+}
+
+export interface CompromiseResolutionInfo {
+  // Current sub-status
+  subStatus: CompromiseSubStatus;
+  
+  // Data model fields (as per requirements)
+  historical_compromise: boolean;
+  active_threats: boolean;
+  compromise_resolved_at?: string; // ISO timestamp when all threats were resolved
+  
+  // Resolution details
+  resolution: {
+    allApprovalsRevoked: boolean;
+    noActiveMaliciousContracts: boolean;
+    noRecentSweeperActivity: boolean; // No sweeper/drainer in last 30-60 days
+    noOngoingAutomatedOutflows: boolean;
+    daysSinceLastMaliciousActivity?: number;
+    lastMaliciousActivityTimestamp?: string;
+  };
+  
+  // Display information
+  displayBadge: CompromiseDisplayBadge;
+  
+  // Tooltip text for UI
+  tooltipText: string;
+  
+  // User-friendly explanation
+  explanation: string;
+}
+
+export interface CompromiseDisplayBadge {
+  // Badge text
+  text: string;
+  
+  // Badge variant (for styling)
+  variant: 'informational' | 'neutral' | 'warning' | 'danger';
+  
+  // Icon suggestion
+  icon: 'shield-check' | 'info' | 'alert-triangle' | 'alert-circle';
+  
+  // Color scheme (NOT red for resolved/no-active-risk)
+  colorScheme: 'gray' | 'blue' | 'yellow' | 'red';
+}
 
 // Historical compromise information
 export interface HistoricalCompromiseInfo {
@@ -120,7 +322,16 @@ export type CompromiseReasonCode =
   | 'CONFIRMED_DRAINER_INTERACTION'    // Direct interaction with confirmed drainer (Pink, Angel, Inferno, MS, etc.)
   | 'ASSET_SWEEP_DETECTED'             // ERC20 + NFT drained rapidly within ≤3 blocks
   | 'MALICIOUS_CONTRACT_INTERACTION'   // Interaction with contract that executes unauthorized transfers
-  | 'CROSS_CHAIN_COMPROMISE';          // Compromised on another chain (ETH/BNB/Base/Solana)
+  | 'CROSS_CHAIN_COMPROMISE'           // Compromised on another chain (ETH/BNB/Base/Solana)
+  // Sub-status detection
+  | 'SWEEPER_PATTERN'                  // Automated sweeper bot detected
+  | 'SWEEPER_BOT_DETECTED'             // Confirmed sweeper bot attack
+  | 'AUTOMATED_OUTFLOW'                // Automated outflows without user initiation
+  | 'AIRDROP_DRAIN'                    // Airdrop followed by drain
+  | 'AIRDROP_FOLLOWED_BY_DRAIN'        // Airdrop followed by drain (explicit)
+  | 'MALICIOUS_APPROVAL'               // Approval to known malicious address
+  | 'UNLIMITED_APPROVAL_TO_UNKNOWN'    // Unlimited approval to unknown address
+  | 'MULTIPLE_UNLIMITED_APPROVALS';    // Multiple unlimited approvals
 
 // Risk flags that PERMANENTLY prevent SAFE status
 export type PermanentRiskFlag =
@@ -576,6 +787,18 @@ export interface WalletAnalysisResult {
   
   // Directional analysis breakdown (for transparency)
   directionalAnalysis?: DirectionalAnalysis;
+  
+  // ============================================
+  // COMPROMISE SUB-STATUS (NEW)
+  // ============================================
+  // Provides granular information about historical vs active compromise
+  // This is INFORMATIONAL - does NOT affect risk score
+  
+  // Sub-status resolution info for previously compromised wallets
+  compromiseResolution?: CompromiseResolutionInfo;
+  
+  // Historical compromise data
+  historicalCompromise?: HistoricalCompromiseInfo;
 }
 
 // ============================================

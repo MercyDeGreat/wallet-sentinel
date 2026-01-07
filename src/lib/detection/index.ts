@@ -6,9 +6,18 @@
 // KEY RULE: DEX interaction alone ≠ compromise signal
 // A wallet should NEVER be flagged as compromised solely for making
 // a Uniswap transaction on any chain (Ethereum, Base, BNB, etc.)
+//
+// SECURITY FIX (2024-01): Added HARD OVERRIDE rule for drainer detection
+// If ANY drainer signal is detected within 90 days, wallet MUST be classified
+// as ACTIVE_COMPROMISE_DRAINER regardless of any other analysis.
 
 // Core detection engine
 export * from './detection-engine';
+
+// DRAINER ACTIVITY DETECTOR (SECURITY FIX 2024-01)
+// Implements HARD OVERRIDE rule - drainer detection that CANNOT be bypassed.
+// Any drainer signal <90 days = ACTIVE_COMPROMISE_DRAINER status.
+export * from './drainer-activity-detector';
 
 // Malicious address database
 export * from './malicious-database';

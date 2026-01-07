@@ -231,6 +231,11 @@ export class SolanaAnalyzer {
       securityResult.state === 'ACTIVELY_COMPROMISED' ? 'CRITICAL' :
       securityResult.state === 'PREVIOUSLY_COMPROMISED' ? 'MEDIUM' : 'LOW';
 
+    // ============================================
+    // BUILD COMPROMISE RESOLUTION INFO
+    // ============================================
+    const compromiseResolution = this.buildCompromiseResolution(securityResult);
+
     return {
       address,
       chain: 'solana',
@@ -258,6 +263,11 @@ export class SolanaAnalyzer {
       recommendations,
       recoveryPlan,
       educationalContent: this.generateEducationalContent(threats),
+      
+      // ============================================
+      // COMPROMISE SUB-STATUS (NEW)
+      // ============================================
+      compromiseResolution,
     };
   }
 
@@ -1084,6 +1094,102 @@ export class SolanaAnalyzer {
         { id: '6', category: 'Security', item: 'Review and revoke unnecessary app connections', completed: false, chainSpecific: ['solana'] as Chain[] },
         { id: '7', category: 'Security', item: 'Understand that "no threats detected" ≠ "safe" for Solana', completed: false, chainSpecific: ['solana'] as Chain[] },
       ],
+    };
+  }
+
+  /**
+   * Build compromise resolution info for Solana wallets.
+   * Maps the three-state security model to the sub-status system.
+   */
+  private buildCompromiseResolution(
+    securityResult: SolanaSecurityResult
+  ): import('@/types').CompromiseResolutionInfo {
+    const { state, isActive, isHistorical, daysSinceLastIncident } = securityResult;
+    
+    // Determine sub-status based on security state
+    let subStatus: import('@/types').CompromiseSubStatus;
+    let displayBadge: import('@/types').CompromiseDisplayBadge;
+    let tooltipText: string;
+    let explanation: string;
+    
+    switch (state) {
+      case 'SAFE':
+        subStatus = 'NONE';
+        displayBadge = {
+          text: 'Clean',
+          variant: 'neutral',
+          icon: 'shield-check',
+          colorScheme: 'gray',
+        };
+        tooltipText = 'No security incidents detected in this wallet\'s history. Note: Solana off-chain attacks cannot be detected.';
+        explanation = 'No on-chain threats detected. Off-chain risks cannot be fully assessed.';
+        break;
+        
+      case 'PREVIOUSLY_COMPROMISED':
+        // Check if resolved (30+ days since last incident)
+        if (daysSinceLastIncident !== undefined && daysSinceLastIncident >= 30) {
+          subStatus = 'RESOLVED';
+          displayBadge = {
+            text: 'Previously Compromised (Resolved)',
+            variant: 'informational',
+            icon: 'shield-check',
+            colorScheme: 'blue',
+          };
+          tooltipText = 'This wallet was compromised in the past but currently shows no active threats.';
+          explanation = `No active threats detected. Past incident was ${daysSinceLastIncident} days ago and appears resolved.`;
+        } else {
+          subStatus = 'NO_ACTIVE_RISK';
+          displayBadge = {
+            text: 'Previously Compromised (No Active Risk)',
+            variant: 'informational',
+            icon: 'info',
+            colorScheme: 'blue',
+          };
+          tooltipText = 'This wallet was compromised in the past but currently shows no active threats. Continued monitoring is recommended.';
+          explanation = 'No active threats detected. This wallet had past security incidents which appear resolved.';
+        }
+        break;
+        
+      case 'ACTIVELY_COMPROMISED':
+        subStatus = 'ACTIVE_THREAT';
+        displayBadge = {
+          text: 'Active Threat',
+          variant: 'danger',
+          icon: 'alert-circle',
+          colorScheme: 'red',
+        };
+        tooltipText = 'This wallet has active security threats that require immediate attention.';
+        explanation = 'Active compromise detected. Immediate action required to secure assets.';
+        break;
+        
+      default:
+        subStatus = 'NONE';
+        displayBadge = {
+          text: 'Unknown',
+          variant: 'neutral',
+          icon: 'info',
+          colorScheme: 'gray',
+        };
+        tooltipText = 'Unable to determine wallet security status.';
+        explanation = 'Security status could not be determined.';
+    }
+    
+    return {
+      subStatus,
+      historical_compromise: isHistorical || state === 'PREVIOUSLY_COMPROMISED',
+      active_threats: isActive || state === 'ACTIVELY_COMPROMISED',
+      compromise_resolved_at: subStatus === 'RESOLVED' ? new Date().toISOString() : undefined,
+      resolution: {
+        allApprovalsRevoked: !isActive,
+        noActiveMaliciousContracts: !isActive,
+        noRecentSweeperActivity: !securityResult.sweeperDetection?.isSweeper,
+        noOngoingAutomatedOutflows: !securityResult.drainerDetection?.isDrainer,
+        daysSinceLastMaliciousActivity: daysSinceLastIncident,
+        lastMaliciousActivityTimestamp: undefined,
+      },
+      displayBadge,
+      tooltipText,
+      explanation,
     };
   }
 }
