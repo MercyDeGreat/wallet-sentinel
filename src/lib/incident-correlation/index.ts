@@ -151,9 +151,7 @@ export type {
   NearIntentTransaction,
   SolanaRecommendation,
   SolanaMachineReadableOutput,
-} from './solana-types';
-
-// Solana constants
+} from './solana-types';// Solana constants
 export {
   SOLANA_CORRELATION_CONFIG,
   SOLANA_KNOWN_PROGRAMS,

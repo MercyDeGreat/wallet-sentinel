@@ -1,7 +1,3 @@
-// Edge Runtime - MUST be first for Cloudflare Pages
-export const runtime = 'edge';
-export const dynamic = 'force-dynamic';
-
 // ============================================
 // WALLET ANALYSIS API ENDPOINT
 // ============================================
@@ -12,14 +8,17 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { EVMAnalyzer } from '@/lib/analyzers/evm-analyzer';
 import { SolanaAnalyzer } from '@/lib/analyzers/solana-analyzer';
-import { Chain, WalletAnalysisRequest, ApiResponse, WalletAnalysisResult } from '@/types';
+import { Chain, WalletAnalysisRequest, ApiResponse, WalletAnalysisResult, SecurityStatus } from '@/types';
+import { getMetricsTracker, SecurityVerdict } from '@/lib/metrics';
 
-// Rate limiting disabled for Edge Runtime (no persistent state)
-// In production, use Cloudflare Rate Limiting or a KV store
-function isRateLimited(_ip: string): boolean {
-  // Rate limiting requires external state (KV, D1, or Cloudflare Rate Limiting)
-  // Disabled for Edge Runtime compatibility
-  return false;
+// Map SecurityStatus to SecurityVerdict for metrics
+function mapStatusToVerdict(status: SecurityStatus): SecurityVerdict {
+  switch (status) {
+    case 'SAFE': return 'SAFE';
+    case 'AT_RISK': return 'AT_RISK';
+    case 'COMPROMISED': return 'COMPROMISED';
+    default: return 'AT_RISK';
+  }
 }
 
 // Validate chain parameter
@@ -49,25 +48,10 @@ export async function POST(request: NextRequest) {
   const startTime = Date.now();
   
   try {
-    // Get client IP for rate limiting
+    // Get client IP for metrics
     const ip = request.headers.get('x-forwarded-for') || 
                request.headers.get('x-real-ip') || 
                'unknown';
-
-    if (isRateLimited(ip)) {
-      console.log(`[RATE_LIMITED] IP: ${ip}`);
-      return NextResponse.json<ApiResponse<null>>(
-        {
-          success: false,
-          error: {
-            code: 'RATE_LIMITED',
-            message: 'Too many requests. Please wait a moment and try again.',
-          },
-          timestamp: new Date().toISOString(),
-        },
-        { status: 429 }
-      );
-    }
 
     // Parse request body
     let body: WalletAnalysisRequest;
@@ -150,10 +134,8 @@ export async function POST(request: NextRequest) {
     } catch (analysisError) {
       console.error(`[ANALYZE_ERROR] Failed to analyze ${trimmedAddress}:`, analysisError);
       
-      // Return a meaningful error instead of failing
       const errorMessage = analysisError instanceof Error ? analysisError.message : 'Unknown error';
       
-      // Check if it's a network/API issue
       if (errorMessage.includes('timeout') || errorMessage.includes('TIMEOUT')) {
         return NextResponse.json<ApiResponse<null>>(
           {
@@ -190,6 +172,22 @@ export async function POST(request: NextRequest) {
     const duration = Date.now() - startTime;
     console.log(`[ANALYZE] Completed in ${duration}ms. Status: ${result.securityStatus}, Score: ${result.riskScore}, Threats: ${result.detectedThreats.length}`);
 
+    // Record metrics (non-blocking)
+    const userAgent = request.headers.get('user-agent') || 'unknown';
+    const tracker = getMetricsTracker();
+    
+    tracker.recordScan({
+      walletAddress: trimmedAddress,
+      chain,
+      verdict: mapStatusToVerdict(result.securityStatus),
+      riskScore: result.riskScore,
+      threatsCount: result.detectedThreats.length,
+      durationMs: duration,
+      ip,
+      userAgent,
+      source: 'web',
+    }).catch(err => console.error('[METRICS] Failed to record:', err));
+
     return NextResponse.json<ApiResponse<WalletAnalysisResult>>(
       {
         success: true,
@@ -221,7 +219,7 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   return NextResponse.json({
     status: 'healthy',
-    service: 'wallet-sentinel',
+    service: 'securnex',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
     supportedChains: ['ethereum', 'base', 'bnb', 'solana'],
