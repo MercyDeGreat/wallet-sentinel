@@ -25,6 +25,8 @@ import { WalletTimeline, CompactTimeline } from './WalletTimeline';
 import { SecurityExplanation, CompactExplanation } from './SecurityExplanation';
 import { EvidenceAwareExplanation, CompactEvidenceExplanation } from './EvidenceAwareExplanation';
 import { generateExplanationFromAnalysis, generateFromAnalysisResult } from '@/lib/explanation';
+import { OffChainThreatBanner, CompactOffChainBanner } from './OffChainThreatBanner';
+import type { OTTIAssessment } from '@/lib/otti/types';
 
 interface SecurityDashboardProps {
   result: WalletAnalysisResult;
@@ -103,15 +105,44 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
             <p className="text-sentinel-text">{result.summary}</p>
           </div>
 
-          {/* Risk Score */}
+          {/* Risk Score - Dual display when OTTI data present */}
           <div className="flex flex-col items-end">
-            <div className="text-sm text-sentinel-muted mb-1">Risk Score</div>
+            {/* On-chain Risk Score */}
+            <div className="text-sm text-sentinel-muted mb-1">On-chain Risk</div>
             <div className="flex items-center gap-2">
               <RiskMeter score={result.riskScore} />
               <span className={`text-2xl font-bold ${getRiskScoreColor(result.riskScore)}`}>
                 {result.riskScore}
               </span>
             </div>
+            
+            {/* Off-chain Exposure Score (if OTTI detected risk) */}
+            {result.offChainIntelligence?.riskDetected && (
+              <div className="mt-2 pt-2 border-t border-sentinel-border">
+                <div className="text-xs text-sentinel-muted mb-1">Off-chain Exposure</div>
+                <div className="flex items-center gap-2">
+                  <div className="w-16 h-1.5 bg-sentinel-surface rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full rounded-full ${
+                        result.offChainIntelligence.exposureLevel === 'critical' ? 'bg-red-500' :
+                        result.offChainIntelligence.exposureLevel === 'high' ? 'bg-orange-500' :
+                        result.offChainIntelligence.exposureLevel === 'moderate' ? 'bg-amber-500' :
+                        'bg-blue-500'
+                      }`}
+                      style={{ width: `${Math.round(result.offChainIntelligence.exposureScore * 100)}%` }}
+                    />
+                  </div>
+                  <span className={`text-sm font-medium ${
+                    result.offChainIntelligence.exposureLevel === 'critical' ? 'text-red-400' :
+                    result.offChainIntelligence.exposureLevel === 'high' ? 'text-orange-400' :
+                    result.offChainIntelligence.exposureLevel === 'moderate' ? 'text-amber-400' :
+                    'text-blue-400'
+                  }`}>
+                    {(result.offChainIntelligence.exposureScore).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </motion.div>
@@ -172,6 +203,21 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
               <span className="text-[10px] opacity-60 ml-1">(Does not affect risk score)</span>
             </div>
           ))}
+        </motion.div>
+      )}
+
+      {/* Off-Chain Threat Intelligence Banner */}
+      {/* CRITICAL: Displayed SEPARATELY from on-chain status - never conflated */}
+      {result.offChainIntelligence?.riskDetected && result.offChainIntelligence.fullAssessment && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.08 }}
+        >
+          <OffChainThreatBanner 
+            assessment={result.offChainIntelligence.fullAssessment as OTTIAssessment}
+            defaultExpanded={false}
+          />
         </motion.div>
       )}
 

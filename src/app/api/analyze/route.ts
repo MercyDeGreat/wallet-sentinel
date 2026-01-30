@@ -8,8 +8,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { EVMAnalyzer } from '@/lib/analyzers/evm-analyzer';
 import { SolanaAnalyzer } from '@/lib/analyzers/solana-analyzer';
-import { Chain, WalletAnalysisRequest, ApiResponse, WalletAnalysisResult, SecurityStatus } from '@/types';
+import { Chain, WalletAnalysisRequest, ApiResponse, WalletAnalysisResult, SecurityStatus, OffChainThreatIntelligence } from '@/types';
 import { getMetricsTracker, SecurityVerdict } from '@/lib/metrics';
+import { getOTTIService, createMockProviders, OTTIAssessment } from '@/lib/otti';
 
 // Map SecurityStatus to SecurityVerdict for metrics
 function mapStatusToVerdict(status: SecurityStatus): SecurityVerdict {
@@ -19,6 +20,55 @@ function mapStatusToVerdict(status: SecurityStatus): SecurityVerdict {
     case 'COMPROMISED': return 'COMPROMISED';
     default: return 'AT_RISK';
   }
+}
+
+// Map SecurityStatus to OTTI on-chain status
+function mapStatusToOTTI(status: SecurityStatus): 'safe' | 'at_risk' | 'compromised' {
+  switch (status) {
+    case 'SAFE':
+    case 'HIGH_ACTIVITY_WALLET':
+    case 'PROTOCOL_INTERACTION':
+      return 'safe';
+    case 'COMPROMISED':
+    case 'ACTIVELY_COMPROMISED':
+    case 'ACTIVE_COMPROMISE_DRAINER':
+      return 'compromised';
+    default:
+      return 'at_risk';
+  }
+}
+
+// Initialize OTTI service with mock providers (in production, use real providers)
+let ottiInitialized = false;
+function initializeOTTI() {
+  if (ottiInitialized) return;
+  
+  try {
+    const ottiService = getOTTIService();
+    const mockProviders = createMockProviders();
+    mockProviders.forEach(provider => ottiService.registerProvider(provider));
+    ottiInitialized = true;
+    console.log('[OTTI] Service initialized with mock providers');
+  } catch (error) {
+    console.warn('[OTTI] Failed to initialize:', error);
+  }
+}
+
+// Convert OTTI assessment to lightweight format for API response
+function convertOTTIAssessment(assessment: OTTIAssessment): OffChainThreatIntelligence {
+  return {
+    riskDetected: assessment.off_chain_risk_detected,
+    signalCount: assessment.summary.signal_count,
+    sourceCount: assessment.summary.source_count,
+    exposureScore: assessment.exposure_score.score,
+    exposureLevel: assessment.exposure_score.level,
+    headline: assessment.summary.headline,
+    explanation: assessment.summary.explanation,
+    guidance: assessment.summary.guidance,
+    statusLine: assessment.summary.status_line,
+    highestConfidence: assessment.summary.highest_confidence,
+    fullAssessment: assessment, // Include full assessment for detailed UI
+  };
 }
 
 // Validate chain parameter
@@ -171,6 +221,28 @@ export async function POST(request: NextRequest) {
 
     const duration = Date.now() - startTime;
     console.log(`[ANALYZE] Completed in ${duration}ms. Status: ${result.securityStatus}, Score: ${result.riskScore}, Threats: ${result.detectedThreats.length}`);
+
+    // ============================================
+    // OFF-CHAIN THREAT INTELLIGENCE (OTTI)
+    // ============================================
+    // Query OTTI providers in parallel (non-blocking for main analysis)
+    // CRITICAL: OTTI results NEVER affect on-chain security status
+    try {
+      initializeOTTI();
+      const ottiService = getOTTIService();
+      const ottiStatus = mapStatusToOTTI(result.securityStatus);
+      const ottiAssessment = await ottiService.assessAddress(trimmedAddress, ottiStatus);
+      
+      if (ottiAssessment.off_chain_risk_detected) {
+        console.log(`[OTTI] Off-chain signals detected for ${trimmedAddress}: ${ottiAssessment.signals.length} signals, exposure: ${ottiAssessment.exposure_score.level}`);
+      }
+      
+      // Add OTTI assessment to result (does NOT affect on-chain status)
+      result.offChainIntelligence = convertOTTIAssessment(ottiAssessment);
+    } catch (ottiError) {
+      // OTTI failure should not break the analysis
+      console.warn('[OTTI] Assessment failed (non-blocking):', ottiError);
+    }
 
     // Record metrics (non-blocking)
     const userAgent = request.headers.get('user-agent') || 'unknown';

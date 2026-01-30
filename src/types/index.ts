@@ -987,6 +987,68 @@ export interface WalletAnalysisResult {
   
   // Full timeline of security events for this wallet
   timeline?: WalletTimeline;
+  
+  // ============================================
+  // OFF-CHAIN THREAT INTELLIGENCE (OTTI)
+  // ============================================
+  // Off-chain threat signals from external intelligence sources.
+  // CRITICAL: Off-chain signals NEVER affect on-chain security status.
+  // These are displayed separately to provide additional context.
+  //
+  // Example display:
+  // On-chain Risk Score: 0.02 (Safe)
+  // Off-chain Exposure Score: 0.41 (Moderate)
+  //
+  // Use case: Wallet may be on-chain safe but associated with 
+  // phishing campaigns, impersonation, or scam websites.
+  
+  // OTTI assessment (optional - may not be available if no providers configured)
+  offChainIntelligence?: OffChainThreatIntelligence;
+}
+
+// ============================================
+// OFF-CHAIN THREAT INTELLIGENCE TYPES
+// ============================================
+// Lightweight types for OTTI integration in WalletAnalysisResult
+// Full OTTI types are in @/lib/otti/types
+
+/**
+ * Off-chain threat intelligence summary for WalletAnalysisResult
+ */
+export interface OffChainThreatIntelligence {
+  // Whether any off-chain risk signals were detected
+  riskDetected: boolean;
+  
+  // Number of active signals
+  signalCount: number;
+  
+  // Number of distinct intel sources reporting
+  sourceCount: number;
+  
+  // Off-chain exposure score (0-1, separate from on-chain risk score)
+  exposureScore: number;
+  
+  // Exposure level for display
+  exposureLevel: 'none' | 'low' | 'moderate' | 'high' | 'critical';
+  
+  // Summary headline (e.g., "Off-chain threat reports detected")
+  headline: string;
+  
+  // User-facing explanation
+  explanation: string;
+  
+  // User guidance
+  guidance: string;
+  
+  // Status line for display
+  statusLine: string;
+  
+  // Highest confidence level among signals
+  highestConfidence: 'low' | 'medium' | 'high' | null;
+  
+  // Full OTTI assessment (for detailed view)
+  // Import from @/lib/otti/types if you need the full structure
+  fullAssessment?: unknown;
 }
 
 // ============================================
