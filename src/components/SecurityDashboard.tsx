@@ -22,6 +22,8 @@ import { RecoveryPlan } from './RecoveryPlan';
 import { EducationalPanel } from './EducationalPanel';
 import { CompromiseStatusBadge, CompromiseStatusCard } from './CompromiseStatusBadge';
 import { WalletTimeline, CompactTimeline } from './WalletTimeline';
+import { SecurityExplanation, CompactExplanation } from './SecurityExplanation';
+import { generateExplanationFromAnalysis } from '@/lib/explanation';
 
 interface SecurityDashboardProps {
   result: WalletAnalysisResult;
@@ -487,6 +489,17 @@ function OverviewTab({
         </div>
       )}
       
+      {/* Security Explanation - Evidence-aware messaging */}
+      {result?.securityStatus !== 'SAFE' && (
+        <div className="lg:col-span-2">
+          <SecurityExplanation 
+            explanation={generateExplanationFromAnalysis(result)}
+            showGuidance={true}
+            defaultExpanded={false}
+          />
+        </div>
+      )}
+
       {/* Critical Actions - For other non-safe statuses */}
       {result?.securityStatus !== 'SAFE' && 
        result?.securityStatus !== 'PREVIOUSLY_COMPROMISED' && 
