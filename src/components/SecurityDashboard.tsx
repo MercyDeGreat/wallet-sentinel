@@ -23,7 +23,8 @@ import { EducationalPanel } from './EducationalPanel';
 import { CompromiseStatusBadge, CompromiseStatusCard } from './CompromiseStatusBadge';
 import { WalletTimeline, CompactTimeline } from './WalletTimeline';
 import { SecurityExplanation, CompactExplanation } from './SecurityExplanation';
-import { generateExplanationFromAnalysis } from '@/lib/explanation';
+import { EvidenceAwareExplanation, CompactEvidenceExplanation } from './EvidenceAwareExplanation';
+import { generateExplanationFromAnalysis, generateFromAnalysisResult } from '@/lib/explanation';
 
 interface SecurityDashboardProps {
   result: WalletAnalysisResult;
@@ -490,10 +491,11 @@ function OverviewTab({
       )}
       
       {/* Security Explanation - Evidence-aware messaging */}
+      {/* Uses uncertainty-aware messaging that explains WHAT was detected AND what was NOT */}
       {result?.securityStatus !== 'SAFE' && (
         <div className="lg:col-span-2">
-          <SecurityExplanation 
-            explanation={generateExplanationFromAnalysis(result)}
+          <EvidenceAwareExplanation 
+            explanation={generateFromAnalysisResult(result)}
             showGuidance={true}
             defaultExpanded={false}
           />
