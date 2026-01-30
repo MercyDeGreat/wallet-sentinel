@@ -36,27 +36,42 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-black antialiased">
+    <html lang="en" className="scroll-smooth">
+      <head>
+        {/* iOS Safari specific meta tags */}
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="mobile-web-app-capable" content="yes" />
+      </head>
+      <body className="min-h-screen min-h-[100dvh] bg-black antialiased overscroll-none">
         {/* Background effects - subtle grid */}
         <div className="fixed inset-0 grid-pattern opacity-20 pointer-events-none" />
         <div className="fixed inset-0 bg-gradient-radial from-cyan-950/20 via-transparent to-transparent pointer-events-none" />
         
         {/* Main content with Web3 Provider */}
         <Web3Provider>
-          <div className="relative z-10">
-            {children}
+          {/* Use CSS Grid for proper footer placement - works better than flexbox on iOS */}
+          <div className="relative z-10 grid min-h-screen min-h-[100dvh]" style={{ gridTemplateRows: '1fr auto' }}>
+            <main className="overflow-x-hidden">
+              {children}
+            </main>
+            
+            {/* Footer disclaimer - stays at bottom of content, never fixed */}
+            <footer 
+              className="bg-black/95 border-t border-cyan-900/30 py-3 px-4"
+              style={{ 
+                paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))',
+                position: 'relative',  /* Explicitly not fixed */
+                width: '100%'
+              }}
+            >
+              <p className="text-center text-[10px] sm:text-xs text-gray-500 max-w-4xl mx-auto leading-relaxed">
+                <strong className="text-cyan-500">⚠️ Disclaimer:</strong> Securnex provides security analysis for educational purposes only. 
+                No wallet custody, no guarantees, no offensive actions. All analysis is read-only. 
+                Always verify independently before taking action.
+              </p>
+            </footer>
           </div>
         </Web3Provider>
-
-        {/* Footer disclaimer - with safe area padding for mobile */}
-        <footer className="fixed bottom-0 left-0 right-0 bg-black/90 backdrop-blur-sm border-t border-cyan-900/30 py-3 px-4 z-50 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">
-          <p className="text-center text-xs text-gray-500 max-w-4xl mx-auto leading-relaxed">
-            <strong className="text-cyan-500">⚠️ Disclaimer:</strong> Securnex provides security analysis for educational purposes only. 
-            No wallet custody, no guarantees, no offensive actions. All analysis is read-only. 
-            Always verify independently before taking action.
-          </p>
-        </footer>
       </body>
     </html>
   );

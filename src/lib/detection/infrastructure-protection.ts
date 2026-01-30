@@ -1096,6 +1096,195 @@ export function getVerifiedDEXRouters(chain: Chain): string[] {
 }
 
 // ============================================
+// CEX WALLET DETECTION
+// ============================================
+// Centralized Exchange hot wallets and deposit contracts
+// CRITICAL: Transfers to/from CEX wallets are NEVER drainer activity!
+
+const CEX_WALLETS: Map<string, { name: string; type: 'HOT_WALLET' | 'DEPOSIT' | 'COLD_WALLET' }> = new Map([
+  // ============================================
+  // BINANCE
+  // ============================================
+  ['0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be', { name: 'Binance', type: 'HOT_WALLET' }],
+  ['0xd551234ae421e3bcba99a0da6d736074f22192ff', { name: 'Binance', type: 'HOT_WALLET' }],
+  ['0x564286362092d8e7936f0549571a803b203aaced', { name: 'Binance', type: 'HOT_WALLET' }],
+  ['0x0681d8db095565fe8a346fa0277bffde9c0edbbf', { name: 'Binance', type: 'HOT_WALLET' }],
+  ['0xfe9e8709d3215310075d67e3ed32a380ccf451c8', { name: 'Binance', type: 'HOT_WALLET' }],
+  ['0x4e9ce36e442e55ecd9025b9a6e0d88485d628a67', { name: 'Binance', type: 'HOT_WALLET' }],
+  ['0xbe0eb53f46cd790cd13851d5eff43d12404d33e8', { name: 'Binance Cold', type: 'COLD_WALLET' }],
+  ['0xf977814e90da44bfa03b6295a0616a897441acec', { name: 'Binance 8', type: 'HOT_WALLET' }],
+  ['0x28c6c06298d514db089934071355e5743bf21d60', { name: 'Binance 14', type: 'HOT_WALLET' }],
+  ['0x21a31ee1afc51d94c2efccaa2092ad1028285549', { name: 'Binance 15', type: 'HOT_WALLET' }],
+  ['0xdfd5293d8e347dfe59e90efd55b2956a1343963d', { name: 'Binance 16', type: 'HOT_WALLET' }],
+  ['0x56eddb7aa87536c09ccc2793473599fd21a8b17f', { name: 'Binance 17', type: 'HOT_WALLET' }],
+  ['0x5a52e96bacdabb82fd05763e25335261b270efcb', { name: 'Binance 28', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // COINBASE
+  // ============================================
+  ['0x71660c4005ba85c37ccec55d0c4493e66fe775d3', { name: 'Coinbase', type: 'HOT_WALLET' }],
+  ['0x503828976d22510aad0201ac7ec88293211d23da', { name: 'Coinbase', type: 'HOT_WALLET' }],
+  ['0xddfabcdc4d8ffc6d5beaf154f18b778f892a0740', { name: 'Coinbase', type: 'HOT_WALLET' }],
+  ['0x3cd751e6b0078be393132286c442345e5dc49699', { name: 'Coinbase', type: 'HOT_WALLET' }],
+  ['0xb5d85cbf7cb3ee0d56b3bb207d5fc4b82f43f511', { name: 'Coinbase', type: 'HOT_WALLET' }],
+  ['0xeb2629a2734e272bcc07bda959863f316f4bd4cf', { name: 'Coinbase', type: 'HOT_WALLET' }],
+  ['0xa9d1e08c7793af67e9d92fe308d5697fb81d3e43', { name: 'Coinbase 10', type: 'HOT_WALLET' }],
+  ['0x77134cbc06cb00b66f4c7e623d5fdbf6777635ec', { name: 'Coinbase Commerce', type: 'HOT_WALLET' }],
+  ['0xe0f0cfde7ee664943906f17f7f14342e76a5cec7', { name: 'Coinbase Commerce 2', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // KRAKEN
+  // ============================================
+  ['0x2910543af39aba0cd09dbb2d50200b3e800a63d2', { name: 'Kraken', type: 'HOT_WALLET' }],
+  ['0x0a869d79a7052c7f1b55a8ebabbea3420f0d1e13', { name: 'Kraken', type: 'HOT_WALLET' }],
+  ['0xe853c56864a2ebe4576a807d26fdc4a0ada51919', { name: 'Kraken', type: 'HOT_WALLET' }],
+  ['0x267be1c1d684f78cb4f6a176c4911b741e4ffdc0', { name: 'Kraken', type: 'HOT_WALLET' }],
+  ['0xfa52274dd61e1643d2205169732f29114bc240b3', { name: 'Kraken', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // KUCOIN
+  // ============================================
+  ['0x2b5634c42055806a59e9107ed44d43c426e58258', { name: 'KuCoin', type: 'HOT_WALLET' }],
+  ['0x689c56aef474df92d44a1b70850f808488f9769c', { name: 'KuCoin', type: 'HOT_WALLET' }],
+  ['0xa1d8d972560c2f8144af871db508f0b0b10a3fbf', { name: 'KuCoin', type: 'HOT_WALLET' }],
+  ['0x4ad64983349c49defe8d7a4686202d24b25d0ce8', { name: 'KuCoin', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // OKX (OKEX)
+  // ============================================
+  ['0x6cc5f688a315f3dc28a7781717a9a798a59fda7b', { name: 'OKX', type: 'HOT_WALLET' }],
+  ['0x236f9f97e0e62388479bf9e5ba4889e46b0273c3', { name: 'OKX', type: 'HOT_WALLET' }],
+  ['0xa7efae728d2936e78bda97dc267687568dd593f3', { name: 'OKX', type: 'HOT_WALLET' }],
+  ['0x5041ed759dd4afc3a72b8192c143f72f4724081a', { name: 'OKX', type: 'HOT_WALLET' }],
+  ['0x98ec059dc3adfbdd63429454aeb0c990fba4a128', { name: 'OKX', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // HUOBI (HTX)
+  // ============================================
+  ['0xab5c66752a9e8167967685f1450532fb96d5d24f', { name: 'Huobi', type: 'HOT_WALLET' }],
+  ['0x6748f50f686bfbca6fe8ad62b22228b87f31ff2b', { name: 'Huobi', type: 'HOT_WALLET' }],
+  ['0xfdb16996831753d5331ff813c29a93c76834a0ad', { name: 'Huobi', type: 'HOT_WALLET' }],
+  ['0xeee28d484628d41a82d01e21d12e2e78d69920da', { name: 'Huobi', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // GEMINI
+  // ============================================
+  ['0xd24400ae8bfebb18ca49be86258a3c749cf46853', { name: 'Gemini', type: 'HOT_WALLET' }],
+  ['0x6fc82a5fe25a5cdb58bc74600a40a69c065263f8', { name: 'Gemini', type: 'HOT_WALLET' }],
+  ['0x61edcdf5bb737adffe5043706e7c5bb1f1a56eea', { name: 'Gemini', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // BYBIT
+  // ============================================
+  ['0xf89d7b9c864f589bbf53a82105107622b35eaa40', { name: 'Bybit', type: 'HOT_WALLET' }],
+  ['0x1db92e2eebc8e0c075a02bea49a2935bcd2dfcf4', { name: 'Bybit', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // CRYPTO.COM
+  // ============================================
+  ['0x6262998ced04146fa42253a5c0af90ca02dfd2a3', { name: 'Crypto.com', type: 'HOT_WALLET' }],
+  ['0x46340b20830761efd32832a74d7169b29feb9758', { name: 'Crypto.com', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // BITFINEX
+  // ============================================
+  ['0x1151314c646ce4e0efd76d1af4760ae66a9fe30f', { name: 'Bitfinex', type: 'HOT_WALLET' }],
+  ['0x742d35cc6634c0532925a3b844bc454e4438f44e', { name: 'Bitfinex', type: 'HOT_WALLET' }],
+  ['0x876eabf441b2ee5b5b0554fd502a8e0600950cfa', { name: 'Bitfinex', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // GATE.IO
+  // ============================================
+  ['0x0d0707963952f2fba59dd06f2b425ace40b492fe', { name: 'Gate.io', type: 'HOT_WALLET' }],
+  ['0x1c4b70a3968436b9a0a9cf5205c787eb81bb558c', { name: 'Gate.io', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // BITSTAMP
+  // ============================================
+  ['0x00bdb5699745f5b860228c8f939abf1b9ae374ed', { name: 'Bitstamp', type: 'HOT_WALLET' }],
+  
+  // ============================================
+  // ROBINHOOD
+  // ============================================
+  ['0x40b38765696e3d5d8d9d834d8aad4bb6e418e489', { name: 'Robinhood', type: 'HOT_WALLET' }],
+]);
+
+// ============================================
+// CEX WALLET CHECK FUNCTIONS
+// ============================================
+
+export interface CEXWalletInfo {
+  isCEXWallet: boolean;
+  exchangeName?: string;
+  walletType?: 'HOT_WALLET' | 'DEPOSIT' | 'COLD_WALLET';
+}
+
+/**
+ * Check if an address is a known centralized exchange wallet.
+ * CEX wallets should NEVER be flagged as drainers.
+ */
+export function isKnownCEXWallet(address: string): boolean {
+  const normalized = address?.toLowerCase() || '';
+  return CEX_WALLETS.has(normalized);
+}
+
+/**
+ * Get detailed CEX wallet information.
+ */
+export function getCEXWalletInfo(address: string): CEXWalletInfo {
+  const normalized = address?.toLowerCase() || '';
+  const info = CEX_WALLETS.get(normalized);
+  
+  if (info) {
+    return {
+      isCEXWallet: true,
+      exchangeName: info.name,
+      walletType: info.type,
+    };
+  }
+  
+  return { isCEXWallet: false };
+}
+
+/**
+ * Check if a transaction is a CEX deposit/withdrawal.
+ * These should NEVER trigger drainer alerts.
+ */
+export function isCEXTransaction(fromAddress: string, toAddress: string): {
+  isCEXActivity: boolean;
+  type: 'DEPOSIT' | 'WITHDRAWAL' | 'NONE';
+  exchangeName?: string;
+} {
+  const fromInfo = getCEXWalletInfo(fromAddress);
+  const toInfo = getCEXWalletInfo(toAddress);
+  
+  if (toInfo.isCEXWallet) {
+    return {
+      isCEXActivity: true,
+      type: 'DEPOSIT',
+      exchangeName: toInfo.exchangeName,
+    };
+  }
+  
+  if (fromInfo.isCEXWallet) {
+    return {
+      isCEXActivity: true,
+      type: 'WITHDRAWAL',
+      exchangeName: fromInfo.exchangeName,
+    };
+  }
+  
+  return { isCEXActivity: false, type: 'NONE' };
+}
+
+/**
+ * Get all known CEX wallet addresses.
+ */
+export function getAllCEXWallets(): string[] {
+  return Array.from(CEX_WALLETS.keys());
+}
+
+// ============================================
 // EXPORTS
 // ============================================
 
@@ -1104,5 +1293,6 @@ export {
   getExpectedBehavior,
   BASE_DEX_ROUTERS,
   DEX_METHOD_SIGNATURES,
+  CEX_WALLETS,
 };
 

@@ -355,6 +355,344 @@ export interface SweeperSignals {
   hasSharedDestinationAcrossVictims: boolean;
 }
 
+// ============================================
+// BASE CHAIN SWEEPER DETECTION SAFEGUARDS
+// ============================================
+// Base has more aggressive automation - extra safeguards required
+// 
+// DETECT: 
+// - Repeated ERC20 sweeps in the same block
+// - Contract-less EOAs acting as sinks
+// - Abnormal call traces
+// - No UI-linked router
+// - Cross-wallet repetition
+//
+// NEVER FLAG:
+// - ENS.base (Basenames)
+// - Official Base bridge
+// - Coinbase-linked wallets
+// - Public Base infra relayers
+
+export interface BaseSweeperSignals extends SweeperSignals {
+  // Base-specific signals
+  hasRepeatedSweepsInBlock: boolean;       // Multiple ERC20 transfers in same block
+  sweepsInBlockCount: number;
+  hasContractlessEOASink: boolean;         // Destination is EOA receiving from many sources
+  eoaSinkAddress?: string;
+  hasAbnormalCallTrace: boolean;           // Unusual internal transaction patterns
+  hasNoUILinkedRouter: boolean;            // Transaction doesn't go through known UI router
+  hasCrossWalletRepetition: boolean;       // Same pattern seen across multiple wallets
+  crossWalletCount: number;
+  
+  // Exclusion flags (if true, NEVER flag as sweeper)
+  isENSBaseActivity: boolean;
+  isOfficialBaseBridge: boolean;
+  isCoinbaseLinkedWallet: boolean;
+  isPublicBaseRelayer: boolean;
+}
+
+// Known Coinbase-linked wallets on Base (including internal infrastructure)
+const COINBASE_LINKED_WALLETS = new Set([
+  '0x1a4b46696b2bb4794eb3d4c26f1c55f9170fa4c5',
+  '0xf6874c88757721a02f47592140905c4f5d7663f6',
+  '0x77696bb39917c91a0c3908d577d5e322095425ca',
+  // Add more as needed
+]);
+
+// Public Base chain relayers that are NEVER sweepers
+const PUBLIC_BASE_RELAYERS = new Set([
+  '0x09aea4b2242abc8bb4bb78d537a67a245a7bec64', // Gelato Relay
+  '0x8b00f8c3b0ae6a5f7bc5e8d95db97bff0e3d7ed1', // Biconomy Relayer
+  // Add more as needed
+]);
+
+/**
+ * Check if an address is a Coinbase-linked wallet.
+ * Coinbase wallets should NEVER be flagged as sweepers on Base.
+ */
+export function isCoinbaseLinkedWallet(address: string): boolean {
+  const normalized = address?.toLowerCase() || '';
+  return COINBASE_LINKED_WALLETS.has(normalized);
+}
+
+/**
+ * Check if an address is a public Base relayer.
+ * Relayers should NEVER be flagged as sweepers.
+ */
+export function isPublicBaseRelayer(address: string): boolean {
+  const normalized = address?.toLowerCase() || '';
+  return PUBLIC_BASE_RELAYERS.has(normalized);
+}
+
+/**
+ * Analyze transaction patterns for Base-specific sweeper behavior.
+ * 
+ * EXTRA SAFEGUARDS FOR BASE CHAIN:
+ * 1. Check exclusion flags FIRST - if any exclusion applies, return safe
+ * 2. Require MULTIPLE sweeper signals (not just one)
+ * 3. Apply stricter thresholds due to Base's aggressive automation
+ */
+export function analyzeBaseSweeperPatterns(
+  transactions: {
+    from: string;
+    to: string;
+    blockNumber: number;
+    tokenAddress?: string;
+    methodId?: string;
+    gasPayer?: string;
+  }[],
+  walletAddress: string,
+  knownVictimPatterns?: Set<string>  // Pattern signatures seen across multiple victims
+): BaseSweeperSignals {
+  const normalized = walletAddress.toLowerCase();
+  
+  // ============================================
+  // STEP 1: CHECK EXCLUSIONS FIRST
+  // ============================================
+  
+  // Check if this wallet is ENS.base related
+  const isENSBaseActivity = transactions.some(tx => 
+    ENS_BASE_CONTRACTS.has(tx.to?.toLowerCase() || '')
+  );
+  
+  // Check if this wallet uses official Base bridge
+  const isOfficialBaseBridge = transactions.some(tx =>
+    BASE_BRIDGE_CONTRACTS.has(tx.to?.toLowerCase() || '')
+  );
+  
+  // Check if this is a Coinbase-linked wallet
+  const isCoinbaseWallet = isCoinbaseLinkedWallet(normalized) ||
+    EXCHANGE_WALLETS.has(normalized);
+  
+  // Check if this is a public Base relayer
+  const isRelayer = isPublicBaseRelayer(normalized);
+  
+  // ============================================
+  // STEP 2: EARLY EXIT IF EXCLUSION APPLIES
+  // ============================================
+  
+  if (isENSBaseActivity || isOfficialBaseBridge || isCoinbaseWallet || isRelayer) {
+    return {
+      hasAutonomousExecution: false,
+      hasThirdPartyGasPayer: false,
+      hasRepeatedDrainForward: false,
+      hasSharedDestinationAcrossVictims: false,
+      hasRepeatedSweepsInBlock: false,
+      sweepsInBlockCount: 0,
+      hasContractlessEOASink: false,
+      hasAbnormalCallTrace: false,
+      hasNoUILinkedRouter: false,
+      hasCrossWalletRepetition: false,
+      crossWalletCount: 0,
+      isENSBaseActivity,
+      isOfficialBaseBridge,
+      isCoinbaseLinkedWallet: isCoinbaseWallet,
+      isPublicBaseRelayer: isRelayer,
+    };
+  }
+  
+  // ============================================
+  // STEP 3: ANALYZE SWEEPER PATTERNS
+  // ============================================
+  
+  // Check for repeated sweeps in same block
+  const blockCounts = new Map<number, number>();
+  for (const tx of transactions) {
+    if (tx.from.toLowerCase() === normalized) {
+      blockCounts.set(tx.blockNumber, (blockCounts.get(tx.blockNumber) || 0) + 1);
+    }
+  }
+  const maxSweepsInBlock = Math.max(...blockCounts.values(), 0);
+  const hasRepeatedSweepsInBlock = maxSweepsInBlock >= 3; // 3+ transfers in same block
+  
+  // Check for contract-less EOA sink pattern
+  const outboundDestinations = new Map<string, number>();
+  for (const tx of transactions) {
+    if (tx.from.toLowerCase() === normalized) {
+      const dest = tx.to?.toLowerCase() || '';
+      outboundDestinations.set(dest, (outboundDestinations.get(dest) || 0) + 1);
+    }
+  }
+  
+  // Find top destination
+  let topDestination = '';
+  let topCount = 0;
+  for (const [addr, count] of outboundDestinations) {
+    if (count > topCount) {
+      topDestination = addr;
+      topCount = count;
+    }
+  }
+  
+  // Check if top destination is an EOA (not a known contract)
+  const isEOASink = Boolean(topDestination) && 
+    !BASE_DEX_ROUTERS.has(topDestination) &&
+    !BASE_BRIDGE_CONTRACTS.has(topDestination) &&
+    !EXCHANGE_WALLETS.has(topDestination) &&
+    !BASE_NFT_PLATFORMS.has(topDestination) &&
+    !ENS_BASE_CONTRACTS.has(topDestination);
+  
+  const hasContractlessEOASink: boolean = isEOASink && topCount >= 3;
+  
+  // Check for third-party gas payer
+  const gasPayerSet = new Set<string>();
+  for (const tx of transactions) {
+    if (tx.gasPayer && tx.gasPayer.toLowerCase() !== normalized) {
+      gasPayerSet.add(tx.gasPayer.toLowerCase());
+    }
+  }
+  const hasThirdPartyGasPayer = gasPayerSet.size > 0;
+  
+  // Check for no UI-linked router
+  const usesKnownRouter = transactions.some(tx =>
+    BASE_DEX_ROUTERS.has(tx.to?.toLowerCase() || '')
+  );
+  const hasNoUILinkedRouter = !usesKnownRouter;
+  
+  // Check for cross-wallet repetition (if patterns provided)
+  const hasCrossWalletRepetition = knownVictimPatterns ? 
+    knownVictimPatterns.size >= 3 : false;
+  
+  // Check for autonomous execution pattern
+  // (transactions happening without user-initiated method calls)
+  const userMethods = new Set([
+    '0x38ed1739', '0x7ff36ab5', '0x04e45aaf', // Swaps
+    '0x1249c58b', '0xa0712d68', '0x40c10f19', // Mints
+    '0xd0e30db0', '0x2e1a7d4d', // Deposit/withdraw
+    '0x095ea7b3', // Approve
+  ]);
+  
+  const userInitiatedTxs = transactions.filter(tx => {
+    const sig = tx.methodId?.slice(0, 10).toLowerCase();
+    return sig && userMethods.has(sig);
+  });
+  
+  const hasAutonomousExecution = userInitiatedTxs.length === 0 && transactions.length > 0;
+  
+  return {
+    hasAutonomousExecution,
+    hasThirdPartyGasPayer,
+    hasRepeatedDrainForward: hasRepeatedSweepsInBlock && hasContractlessEOASink,
+    hasSharedDestinationAcrossVictims: hasCrossWalletRepetition,
+    hasRepeatedSweepsInBlock,
+    sweepsInBlockCount: maxSweepsInBlock,
+    hasContractlessEOASink,
+    eoaSinkAddress: hasContractlessEOASink ? topDestination : undefined,
+    hasAbnormalCallTrace: false, // Would need trace data to determine
+    hasNoUILinkedRouter,
+    hasCrossWalletRepetition,
+    crossWalletCount: knownVictimPatterns?.size || 0,
+    isENSBaseActivity,
+    isOfficialBaseBridge,
+    isCoinbaseLinkedWallet: isCoinbaseWallet,
+    isPublicBaseRelayer: isRelayer,
+  };
+}
+
+/**
+ * Detect Base-specific sweeper with strict criteria.
+ * 
+ * REQUIREMENTS FOR SWEEPER CLASSIFICATION:
+ * 1. NO exclusion flags can be true
+ * 2. At least 3 sweeper signals must be present
+ * 3. Confidence must be HIGH to flag
+ */
+export function detectBaseSweeperStrict(signals: BaseSweeperSignals): StrictDetectionResult {
+  // ============================================
+  // HARD EXCLUSIONS - NEVER FLAG
+  // ============================================
+  if (signals.isENSBaseActivity || 
+      signals.isOfficialBaseBridge || 
+      signals.isCoinbaseLinkedWallet || 
+      signals.isPublicBaseRelayer) {
+    return {
+      isDrainer: false,
+      isSweeper: false,
+      confidence: 'NONE',
+      drainerSignals: { hasSuddenAssetOutflow: false, hasMultipleAssetTypes: false, hasImmediateForwarding: false, hasMaliciousApproval: false, hasMaliciousContractInteraction: false },
+      sweeperSignals: signals,
+      missingConditions: ['Excluded: legitimate protocol activity detected'],
+      explanation: 'Activity involves legitimate Base protocols. Not a sweeper.',
+      shouldFlag: false,
+    };
+  }
+  
+  // ============================================
+  // COUNT SWEEPER SIGNALS
+  // ============================================
+  const conditionsMet: string[] = [];
+  const missingConditions: string[] = [];
+  
+  if (signals.hasRepeatedSweepsInBlock && signals.sweepsInBlockCount >= 3) {
+    conditionsMet.push(`${signals.sweepsInBlockCount} sweeps in same block`);
+  } else {
+    missingConditions.push('No repeated sweeps in single block');
+  }
+  
+  if (signals.hasContractlessEOASink) {
+    conditionsMet.push(`Contract-less EOA sink: ${signals.eoaSinkAddress}`);
+  } else {
+    missingConditions.push('No contract-less EOA sink');
+  }
+  
+  if (signals.hasAutonomousExecution) {
+    conditionsMet.push('Autonomous tx execution (no user-initiated methods)');
+  } else {
+    missingConditions.push('User-initiated methods present');
+  }
+  
+  if (signals.hasThirdPartyGasPayer) {
+    conditionsMet.push('Third-party gas payer detected');
+  } else {
+    missingConditions.push('Gas paid by wallet owner');
+  }
+  
+  if (signals.hasNoUILinkedRouter) {
+    conditionsMet.push('No UI-linked router used');
+  } else {
+    missingConditions.push('Uses known UI router');
+  }
+  
+  if (signals.hasCrossWalletRepetition && signals.crossWalletCount >= 3) {
+    conditionsMet.push(`Pattern seen across ${signals.crossWalletCount} wallets`);
+  } else {
+    missingConditions.push('No cross-wallet pattern repetition');
+  }
+  
+  // ============================================
+  // REQUIRE AT LEAST 3 SIGNALS (Base-specific)
+  // ============================================
+  const signalCount = conditionsMet.length;
+  const MIN_SIGNALS_FOR_BASE_SWEEPER = 3;
+  
+  let confidence: 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE' = 'NONE';
+  let shouldFlag = false;
+  
+  if (signalCount >= 4) {
+    confidence = 'HIGH';
+    shouldFlag = true;
+  } else if (signalCount >= MIN_SIGNALS_FOR_BASE_SWEEPER) {
+    confidence = 'MEDIUM';
+    shouldFlag = false; // Don't auto-flag on MEDIUM for Base
+  } else if (signalCount >= 2) {
+    confidence = 'LOW';
+    shouldFlag = false;
+  }
+  
+  return {
+    isDrainer: false,
+    isSweeper: confidence === 'HIGH',
+    confidence,
+    drainerSignals: { hasSuddenAssetOutflow: false, hasMultipleAssetTypes: false, hasImmediateForwarding: false, hasMaliciousApproval: false, hasMaliciousContractInteraction: false },
+    sweeperSignals: signals,
+    missingConditions: shouldFlag ? [] : missingConditions,
+    explanation: shouldFlag 
+      ? `HIGH confidence Base sweeper: ${signalCount} signals (${conditionsMet.join(', ')})`
+      : `${confidence} confidence: Only ${signalCount} signals (need ≥${MIN_SIGNALS_FOR_BASE_SWEEPER}). Missing: ${missingConditions.slice(0, 2).join(', ')}`,
+    shouldFlag,
+  };
+}
+
 export interface StrictDetectionResult {
   isDrainer: boolean;
   isSweeper: boolean;

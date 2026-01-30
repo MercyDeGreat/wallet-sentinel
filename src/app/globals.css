@@ -342,6 +342,26 @@ body {
   animation: shimmer 1.5s infinite;
 }
 
+/* Hide scrollbar utility - multiple methods for cross-browser support */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;  /* Chrome, Safari and Opera */
+}
+
+/* Also hide scrollbars on horizontal scroll containers */
+.overflow-x-auto {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.overflow-x-auto::-webkit-scrollbar {
+  display: none;
+}
+
 /* Mobile responsive fixes */
 @media (max-width: 640px) {
   .card-hover:hover {
@@ -354,13 +374,94 @@ body {
   input[type="submit"],
   input[type="button"] {
     min-height: 44px;
-    min-width: 44px;
   }
   
   /* Prevent text zoom on input focus (iOS) */
   input, select, textarea {
     font-size: 16px !important;
   }
+}
+
+/* Extra small screens (under 375px) */
+@media (max-width: 374px) {
+  /* Even more compact tabs */
+  .glass-card {
+    padding: 0.75rem;
+  }
+}
+
+/* ========================================
+   iOS SAFARI SPECIFIC FIXES
+   ======================================== */
+
+/* Force horizontal scroll containers to work on iOS */
+.ios-scroll-container {
+  display: flex;
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  /* Prevent iOS from interfering */
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  /* Hide scrollbar */
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.ios-scroll-container::-webkit-scrollbar {
+  display: none;
+  height: 0;
+  width: 0;
+}
+
+/* Prevent items from shrinking on iOS */
+.ios-scroll-item {
+  flex: 0 0 auto;
+  -webkit-flex: 0 0 auto;
+}
+
+/* Fix flexbox issues on iOS */
+.ios-flex-row {
+  display: -webkit-box;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-box-orient: horizontal;
+  -webkit-box-direction: normal;
+  -webkit-flex-direction: row;
+  flex-direction: row;
+}
+
+/* Mobile approval card layout */
+.approval-card-mobile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.approval-card-mobile .approval-top-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.approval-card-mobile .approval-bottom-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-left: 2rem;
+  width: 100%;
+}
+
+/* Ensure badges don't overlap */
+.risk-badge-container {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-width: max-content;
 }
 
 /* Reduce animations for users who prefer reduced motion */

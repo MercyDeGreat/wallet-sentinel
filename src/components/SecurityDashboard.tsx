@@ -170,34 +170,34 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
         </motion.div>
       )}
 
-      {/* Quick Stats */}
+      {/* Quick Stats - 2 columns on mobile, 4 on desktop */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
-        className="grid grid-cols-2 md:grid-cols-4 gap-4"
+        className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 md:gap-4"
       >
         <StatCard
-          icon={<AlertTriangle className="w-5 h-5" />}
+          icon={<AlertTriangle className="w-4 h-4 sm:w-5 sm:h-5" />}
           label="Active Threats"
           value={safeThreats.filter((t) => t?.ongoingRisk).length}
           color={safeThreats.filter((t) => t?.ongoingRisk).length > 0 ? 'danger' : 'safe'}
         />
         <StatCard
-          icon={<Layers className="w-5 h-5" />}
-          label="Token Approvals"
+          icon={<Layers className="w-4 h-4 sm:w-5 sm:h-5" />}
+          label="Approvals"
           value={safeApprovals.length}
           color={safeApprovals.filter((a) => a?.riskLevel === 'HIGH' || a?.riskLevel === 'CRITICAL').length > 0 ? 'warning' : 'info'}
         />
         <StatCard
-          icon={<AlertCircle className="w-5 h-5" />}
-          label="High Risk Approvals"
+          icon={<AlertCircle className="w-4 h-4 sm:w-5 sm:h-5" />}
+          label="High Risk"
           value={safeApprovals.filter((a) => a?.riskLevel === 'HIGH' || a?.riskLevel === 'CRITICAL').length}
           color={safeApprovals.filter((a) => a?.riskLevel === 'HIGH' || a?.riskLevel === 'CRITICAL').length > 0 ? 'danger' : 'safe'}
         />
         <StatCard
-          icon={<Clock className="w-5 h-5" />}
-          label="Analysis Time"
+          icon={<Clock className="w-4 h-4 sm:w-5 sm:h-5" />}
+          label="Analysis"
           value={new Date(result.timestamp).toLocaleTimeString()}
           color="info"
           isText
@@ -209,30 +209,42 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2 }}
-        className="flex gap-2 overflow-x-auto pb-2"
+        className="w-full overflow-hidden"
       >
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg whitespace-nowrap transition-all ${
-              activeTab === tab.id
-                ? 'bg-sentinel-primary text-white'
-                : 'bg-sentinel-surface hover:bg-sentinel-elevated text-sentinel-text'
-            }`}
-          >
-            {tab.label}
-            {tab.count !== undefined && tab.count > 0 && (
-              <span className={`px-2 py-0.5 rounded-full text-xs ${
-                activeTab === tab.id
-                  ? 'bg-white/20'
-                  : 'bg-sentinel-border'
-              }`}>
-                {tab.count}
-              </span>
-            )}
-          </button>
-        ))}
+        {/* Scroll container for mobile - iOS-optimized horizontal scroll */}
+        <div className="ios-scroll-container gap-2 pb-3 px-1 -mx-1">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`
+                ios-scroll-item
+                inline-flex items-center justify-center gap-1.5
+                px-4 py-2.5
+                rounded-lg whitespace-nowrap 
+                transition-colors
+                text-sm font-medium
+                touch-manipulation
+                ${
+                  activeTab === tab.id
+                    ? 'bg-sentinel-primary text-white'
+                    : 'bg-sentinel-surface hover:bg-sentinel-elevated text-sentinel-text border border-sentinel-border'
+                }
+              `}
+            >
+              {tab.label}
+              {tab.count !== undefined && tab.count > 0 && (
+                <span className={`px-1.5 py-0.5 rounded-full text-xs ${
+                  activeTab === tab.id
+                    ? 'bg-white/20'
+                    : 'bg-sentinel-border'
+                }`}>
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
       </motion.div>
 
       {/* Tab Content */}
@@ -701,12 +713,12 @@ function StatCard({
   };
 
   return (
-    <div className="glass-card rounded-xl p-4">
-      <div className="flex items-center gap-2 text-sentinel-muted mb-2">
-        {icon}
-        <span className="text-xs">{label}</span>
+    <div className="glass-card rounded-lg sm:rounded-xl p-2.5 sm:p-4">
+      <div className="flex items-center gap-1 sm:gap-2 text-sentinel-muted mb-1 sm:mb-2">
+        <span className="flex-shrink-0 w-3.5 h-3.5 sm:w-5 sm:h-5">{icon}</span>
+        <span className="text-[9px] sm:text-xs truncate leading-tight">{label}</span>
       </div>
-      <div className={`${isText ? 'text-sm' : 'text-2xl'} font-bold ${colorClasses[color]}`}>
+      <div className={`${isText ? 'text-[10px] sm:text-sm truncate' : 'text-lg sm:text-2xl'} font-bold ${colorClasses[color]}`}>
         {value}
       </div>
     </div>

@@ -72,12 +72,54 @@ const RECENCY_CONFIDENCE_MULTIPLIERS: Record<DrainerActivityRecency, number> = {
 // ============================================
 // MINIMUM THRESHOLDS FOR DRAINER CLASSIFICATION
 // ============================================
+// RULE: Wallet is NOT malicious unless ≥3 INDEPENDENT signals exist
 // ALL of these must be met to classify as a drainer
 
 const MIN_UNIQUE_VICTIMS = 3;           // Must have funds from at least 3 unrelated sources
 const MIN_APPROVAL_ABUSE_EVIDENCE = 1;  // At least 1 approval-based drain
 const MIN_CONSOLIDATION_PATTERNS = 1;   // At least 1 pattern of consolidation/laundering
 const MAX_LEGITIMATE_INTERACTIONS = 0;  // Must have ZERO DEX/NFT/bridge interactions
+
+// ============================================
+// MULTI-SIGNAL REQUIREMENTS (MANDATORY)
+// ============================================
+// CRITICAL: No single-signal verdicts allowed!
+const MIN_INDEPENDENT_SIGNALS_FOR_DRAINER = 3;
+
+// Chain-specific signal thresholds
+export interface ChainSignalThresholds {
+  minIndependentSignals: number;
+  minVictimCount: number;
+  minApprovalAbuseCount: number;
+  minConfidenceScore: number;
+}
+
+export const CHAIN_SIGNAL_THRESHOLDS: Record<Chain, ChainSignalThresholds> = {
+  ethereum: {
+    minIndependentSignals: 3,
+    minVictimCount: 3,
+    minApprovalAbuseCount: 1,
+    minConfidenceScore: 90,
+  },
+  base: {
+    minIndependentSignals: 3,  // Base has aggressive automation - same threshold
+    minVictimCount: 3,
+    minApprovalAbuseCount: 1,
+    minConfidenceScore: 90,
+  },
+  bnb: {
+    minIndependentSignals: 4,  // BNB has high scam density - HIGHER threshold
+    minVictimCount: 4,
+    minApprovalAbuseCount: 2,
+    minConfidenceScore: 95,
+  },
+  solana: {
+    minIndependentSignals: 3,  // Solana has different mechanics
+    minVictimCount: 3,
+    minApprovalAbuseCount: 1,  // No EVM approvals, different signals
+    minConfidenceScore: 95,
+  },
+};
 
 // ============================================
 // TRANSACTION INTERFACES
@@ -168,6 +210,34 @@ interface StrictDrainerCriteria {
   legitimateInteractionCount: number;
   allCriteriaMet: boolean;
   failedCriteria: string[];
+  
+  // MULTI-SIGNAL TRACKING (MANDATORY)
+  independentSignalCount: number;
+  detectedSignals: IndependentSignal[];
+  meetsMultiSignalRequirement: boolean;
+}
+
+// ============================================
+// INDEPENDENT SIGNAL TRACKING
+// ============================================
+// Each signal type can only count ONCE toward the threshold
+
+export type IndependentSignalType =
+  | 'MULTIPLE_UNRELATED_VICTIMS'     // Funds from ≥3 unrelated sources
+  | 'APPROVAL_ABUSE_DETECTED'        // Approval followed by unauthorized drain
+  | 'CONSOLIDATION_PATTERN'          // Funds routed to aggregation/laundering
+  | 'KNOWN_MALICIOUS_INTERACTION'    // Interaction with known drainer address
+  | 'IMMEDIATE_OUTFLOW_PATTERN'      // Rapid asset movement (supporting only)
+  | 'MULTI_TOKEN_ZEROING'            // Multiple tokens zeroed out
+  | 'NO_LEGITIMATE_ACTIVITY'         // Zero interaction with DEX/NFT/DeFi
+  | 'CROSS_WALLET_REPETITION';       // Same pattern across multiple wallets
+
+export interface IndependentSignal {
+  type: IndependentSignalType;
+  confidence: number;
+  evidence: string;
+  relatedAddresses: string[];
+  isPrimary: boolean;  // Primary signals count toward threshold
 }
 
 // ============================================
@@ -320,32 +390,40 @@ export function detectDrainerActivity(
   
   if (strictCriteria.allCriteriaMet) {
     // This is a HIGH-CONFIDENCE drainer
-    detectedSignals.push({
-      signal: 'MULTI_TOKEN_ZEROING',
-      detectedAt: new Date().toISOString(),
-      txHash: transactions[0]?.hash || 'N/A',
-      confidence: 95,
-      details: `Strict drainer criteria met: ${strictCriteria.victimCount} victims, ` +
-        `${strictCriteria.approvalAbuseCount} approval abuses, ` +
-        `funds routed to ${strictCriteria.consolidationDestinations.length} consolidation address(es)`,
-      relatedAddresses: strictCriteria.consolidationDestinations,
-    });
+    // Convert IndependentSignals to DrainerBehaviorDetections
+    for (const signal of strictCriteria.detectedSignals) {
+      if (signal.isPrimary) {
+        detectedSignals.push({
+          signal: signal.type as DrainerBehaviorSignal,
+          detectedAt: new Date().toISOString(),
+          txHash: transactions[0]?.hash || 'N/A',
+          confidence: signal.confidence,
+          details: signal.evidence,
+          relatedAddresses: signal.relatedAddresses,
+        });
+      }
+    }
     
     const recency = calculateRecencyFromTimestamps(
       tokenTransfers.map(t => t.timestamp),
       currentTimestamp
     );
     
+    const chainThresholds = CHAIN_SIGNAL_THRESHOLDS[chain] || CHAIN_SIGNAL_THRESHOLDS.ethereum;
+    
     return {
       shouldOverride: true,
       detectedSignals,
       recency,
-      confidence: 95,
+      confidence: Math.min(chainThresholds.minConfidenceScore, 95),
       canEverBeSafe: false,
       canBePreviouslyCompromised: !recency.isActive,
-      overrideReason: `HIGH-CONFIDENCE DRAINER: All strict criteria met. ` +
+      overrideReason: `HIGH-CONFIDENCE DRAINER: ${strictCriteria.independentSignalCount} independent signals (≥${chainThresholds.minIndependentSignals} required). ` +
         `${strictCriteria.victimCount} victims, ${strictCriteria.approvalAbuseCount} approval abuses.`,
-      downgradeBlockers: ['All strict drainer criteria met'],
+      downgradeBlockers: [
+        `${strictCriteria.independentSignalCount} independent malicious signals detected`,
+        'All strict drainer criteria met',
+      ],
       contextClassification: contextResult,
     };
   }
@@ -386,6 +464,8 @@ function analyzeStrictDrainerCriteria(
   currentTimestamp: number
 ): StrictDrainerCriteria {
   const failedCriteria: string[] = [];
+  const detectedSignals: IndependentSignal[] = [];
+  const chainThresholds = CHAIN_SIGNAL_THRESHOLDS[chain] || CHAIN_SIGNAL_THRESHOLDS.ethereum;
   
   // ============================================
   // CRITERION 1: Funds from MULTIPLE unrelated victims
@@ -417,10 +497,19 @@ function analyzeStrictDrainerCriteria(
   }
   
   const victimCount = inboundSources.size;
-  const hasMultipleVictims = victimCount >= MIN_UNIQUE_VICTIMS;
+  const hasMultipleVictims = victimCount >= chainThresholds.minVictimCount;
   
   if (!hasMultipleVictims) {
-    failedCriteria.push(`Only ${victimCount} unique sources (need ${MIN_UNIQUE_VICTIMS}+)`);
+    failedCriteria.push(`Only ${victimCount} unique sources (need ${chainThresholds.minVictimCount}+ for ${chain})`);
+  } else {
+    // ADD INDEPENDENT SIGNAL: Multiple unrelated victims
+    detectedSignals.push({
+      type: 'MULTIPLE_UNRELATED_VICTIMS',
+      confidence: Math.min(100, 50 + (victimCount * 10)),
+      evidence: `Funds received from ${victimCount} unrelated addresses`,
+      relatedAddresses: [...inboundSources],
+      isPrimary: true,
+    });
   }
   
   // ============================================
@@ -518,10 +607,40 @@ function analyzeStrictDrainerCriteria(
     }
   }
   
-  const hasApprovalAbuse = approvalAbuseCount >= MIN_APPROVAL_ABUSE_EVIDENCE;
+  const hasApprovalAbuse = approvalAbuseCount >= chainThresholds.minApprovalAbuseCount;
   
   if (!hasApprovalAbuse) {
-    failedCriteria.push(`Only ${approvalAbuseCount} approval abuses (need ${MIN_APPROVAL_ABUSE_EVIDENCE}+)`);
+    failedCriteria.push(`Only ${approvalAbuseCount} approval abuses (need ${chainThresholds.minApprovalAbuseCount}+ for ${chain})`);
+  } else {
+    // ADD INDEPENDENT SIGNAL: Approval abuse detected
+    const maliciousSpenders = approvals
+      .filter(a => {
+        const spender = normalizeAddress(a.spender);
+        return isMaliciousAddress(spender, chain) !== null || isKnownDrainer(spender);
+      })
+      .map(a => a.spender);
+    
+    detectedSignals.push({
+      type: 'APPROVAL_ABUSE_DETECTED',
+      confidence: Math.min(100, 60 + (approvalAbuseCount * 15)),
+      evidence: `${approvalAbuseCount} approval abuse patterns detected (${approvalDrainPatterns.length} rapid drains)`,
+      relatedAddresses: [...new Set(maliciousSpenders)],
+      isPrimary: true,
+    });
+  }
+  
+  // ADD SIGNAL for rapid drain patterns (supporting signal)
+  if (approvalDrainPatterns.length > 0) {
+    const avgTimeDiff = approvalDrainPatterns.reduce((sum, p) => sum + p.timeDiff, 0) / approvalDrainPatterns.length;
+    if (avgTimeDiff < 60) { // Average under 1 minute = highly suspicious
+      detectedSignals.push({
+        type: 'IMMEDIATE_OUTFLOW_PATTERN',
+        confidence: 85,
+        evidence: `${approvalDrainPatterns.length} approval→drain patterns with average ${Math.round(avgTimeDiff)}s delay`,
+        relatedAddresses: approvalDrainPatterns.map(p => normalizeAddress(p.drain.to)),
+        isPrimary: false, // Supporting signal only
+      });
+    }
   }
   
   // ============================================
@@ -587,6 +706,16 @@ function analyzeStrictDrainerCriteria(
   
   if (!hasConsolidationPattern) {
     failedCriteria.push('No consolidation/laundering pattern detected');
+  } else {
+    // ADD INDEPENDENT SIGNAL: Consolidation pattern
+    const uniqueConsolidation = [...new Set(consolidationDestinations)];
+    detectedSignals.push({
+      type: 'CONSOLIDATION_PATTERN',
+      confidence: Math.min(100, 70 + (uniqueConsolidation.length * 10)),
+      evidence: `Funds routed to ${uniqueConsolidation.length} consolidation/laundering address(es)`,
+      relatedAddresses: uniqueConsolidation,
+      isPrimary: true,
+    });
   }
   
   // ============================================
@@ -611,16 +740,41 @@ function analyzeStrictDrainerCriteria(
   
   if (!hasNoLegitimateInteractions) {
     failedCriteria.push(`${legitimateInteractionCount} legitimate protocol interactions (drainers have 0)`);
+  } else if (transactions.length > 0 || tokenTransfers.length > 0) {
+    // ADD INDEPENDENT SIGNAL: No legitimate activity
+    detectedSignals.push({
+      type: 'NO_LEGITIMATE_ACTIVITY',
+      confidence: 80,
+      evidence: `Zero interactions with DEX/NFT/DeFi protocols despite ${transactions.length + tokenTransfers.length} total transactions`,
+      relatedAddresses: [],
+      isPrimary: true,
+    });
   }
   
   // ============================================
-  // ALL CRITERIA MUST BE MET
+  // MULTI-SIGNAL REQUIREMENT CHECK (MANDATORY)
+  // ============================================
+  // Count PRIMARY signals only (supporting signals don't count toward threshold)
+  
+  const primarySignals = detectedSignals.filter(s => s.isPrimary);
+  const independentSignalCount = primarySignals.length;
+  const meetsMultiSignalRequirement = independentSignalCount >= chainThresholds.minIndependentSignals;
+  
+  if (!meetsMultiSignalRequirement && independentSignalCount > 0) {
+    failedCriteria.push(
+      `Only ${independentSignalCount} independent signals (need ≥${chainThresholds.minIndependentSignals} for ${chain})`
+    );
+  }
+  
+  // ============================================
+  // ALL CRITERIA MUST BE MET + MULTI-SIGNAL CHECK
   // ============================================
   
   const allCriteriaMet = hasMultipleVictims && 
                          hasApprovalAbuse && 
                          hasConsolidationPattern && 
-                         hasNoLegitimateInteractions;
+                         hasNoLegitimateInteractions &&
+                         meetsMultiSignalRequirement;  // MANDATORY!
   
   return {
     hasMultipleVictims,
@@ -633,6 +787,10 @@ function analyzeStrictDrainerCriteria(
     legitimateInteractionCount,
     allCriteriaMet,
     failedCriteria,
+    // MULTI-SIGNAL TRACKING
+    independentSignalCount,
+    detectedSignals,
+    meetsMultiSignalRequirement,
   };
 }
 

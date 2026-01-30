@@ -181,32 +181,32 @@ export function ApprovalsDashboard({ approvals, chain }: ApprovalsDashboardProps
         </div>
       </div>
 
-      {/* Summary Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="glass-card rounded-xl p-4">
-          <div className="text-sentinel-muted text-sm mb-1">Total Approvals</div>
-          <div className="text-2xl font-bold">{approvals.length}</div>
+      {/* Summary Stats - 2 columns on mobile, 4 on desktop */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+        <div className="glass-card rounded-xl p-3 sm:p-4">
+          <div className="text-sentinel-muted text-xs sm:text-sm mb-1">Total Approvals</div>
+          <div className="text-xl sm:text-2xl font-bold">{approvals.length}</div>
         </div>
-        <div className="glass-card rounded-xl p-4">
-          <div className="text-sentinel-muted text-sm mb-1 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-status-warning" />
-            High Risk
+        <div className="glass-card rounded-xl p-3 sm:p-4">
+          <div className="text-sentinel-muted text-xs sm:text-sm mb-1 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-status-warning flex-shrink-0" />
+            <span>High Risk</span>
           </div>
-          <div className="text-2xl font-bold text-status-warning">{highRiskCount}</div>
+          <div className="text-xl sm:text-2xl font-bold text-status-warning">{highRiskCount}</div>
         </div>
-        <div className="glass-card rounded-xl p-4">
-          <div className="text-sentinel-muted text-sm mb-1 flex items-center gap-2">
-            <AlertIcon className="w-4 h-4 text-status-danger" />
-            Malicious
+        <div className="glass-card rounded-xl p-3 sm:p-4">
+          <div className="text-sentinel-muted text-xs sm:text-sm mb-1 flex items-center gap-1.5">
+            <AlertIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-status-danger flex-shrink-0" />
+            <span>Malicious</span>
           </div>
-          <div className="text-2xl font-bold text-status-danger">{maliciousCount}</div>
+          <div className="text-xl sm:text-2xl font-bold text-status-danger">{maliciousCount}</div>
         </div>
-        <div className="glass-card rounded-xl p-4">
-          <div className="text-sentinel-muted text-sm mb-1 flex items-center gap-2">
-            <CheckCircle className="w-4 h-4 text-status-safe" />
-            Revoked
+        <div className="glass-card rounded-xl p-3 sm:p-4">
+          <div className="text-sentinel-muted text-xs sm:text-sm mb-1 flex items-center gap-1.5">
+            <CheckCircle className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-status-safe flex-shrink-0" />
+            <span>Revoked</span>
           </div>
-          <div className="text-2xl font-bold text-status-safe">{revokedCount}</div>
+          <div className="text-xl sm:text-2xl font-bold text-status-safe">{revokedCount}</div>
         </div>
       </div>
 
@@ -232,9 +232,9 @@ export function ApprovalsDashboard({ approvals, chain }: ApprovalsDashboardProps
       )}
 
       {/* Toolbar */}
-      <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-        {/* Filters */}
-        <div className="flex gap-2">
+      <div className="flex flex-col gap-3 sm:gap-4">
+        {/* Filters - scrollable on mobile */}
+        <div className="ios-scroll-container gap-2 -mx-1 px-1 pb-1">
           <FilterButton
             active={filter === 'all'}
             onClick={() => setFilter('all')}
@@ -258,16 +258,16 @@ export function ApprovalsDashboard({ approvals, chain }: ApprovalsDashboardProps
         </div>
 
         {/* Actions */}
-        <div className="flex gap-2">
-          {highRiskCount > 0 && (
+        {highRiskCount > 0 && (
+          <div className="flex">
             <button
               onClick={selectAllHighRisk}
-              className="px-3 py-2 text-sm bg-sentinel-surface border border-sentinel-border rounded-lg hover:border-status-warning transition-colors"
+              className="px-3 py-2 text-xs sm:text-sm bg-sentinel-surface border border-sentinel-border rounded-lg hover:border-status-warning transition-colors touch-manipulation"
             >
               Select All High Risk
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Approval List */}
@@ -347,14 +347,14 @@ function FilterButton({
   return (
     <button
       onClick={onClick}
-      className={`px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+      className={`ios-scroll-item px-2.5 sm:px-3 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors touch-manipulation whitespace-nowrap ${
         active
           ? 'bg-sentinel-primary text-white'
           : 'bg-sentinel-surface hover:bg-sentinel-elevated'
       }`}
     >
       {label}
-      <span className={`ml-2 ${color && !active ? colorClasses[color] : ''}`}>({count})</span>
+      <span className={`ml-1 sm:ml-2 ${color && !active ? colorClasses[color] : ''}`}>({count})</span>
     </button>
   );
 }
@@ -491,91 +491,103 @@ function ApprovalCard({
         isRevoked ? 'opacity-60' : ''
       }`}
     >
-      {/* Main Row */}
-      <div className="p-4 flex items-center gap-4">
-        {/* Checkbox */}
-        <button
-          onClick={onSelect}
-          className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-            isSelected
-              ? 'bg-sentinel-primary border-sentinel-primary'
-              : 'border-sentinel-border hover:border-sentinel-primary'
-          }`}
-        >
-          {isSelected && <CheckCircle className="w-3 h-3 text-white" />}
-        </button>
-
-        {/* Token Info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="font-semibold">{approval.token.symbol}</span>
-            <span className="text-xs text-sentinel-muted">{approval.token.name}</span>
-            {isRevoked && (
-              <span className="px-2 py-0.5 text-xs bg-status-safe/20 text-status-safe rounded-full flex items-center gap-1">
-                <CheckCircle className="w-3 h-3" />
-                Revoked
-              </span>
-            )}
-            {approval.isMalicious && !isRevoked && (
-              <span className="px-2 py-0.5 text-xs bg-status-danger-bg text-status-danger rounded-full">
-                Malicious
-              </span>
-            )}
-            {approval.isUnlimited && !approval.isMalicious && !isRevoked && (
-              <span className="px-2 py-0.5 text-xs bg-status-warning-bg text-status-warning rounded-full">
-                Unlimited
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2 text-xs text-sentinel-muted">
-            <span>Spender:</span>
-            <span className="font-mono truncate max-w-[200px]">
-              {approval.spenderLabel || approval.spender}
-            </span>
-          </div>
-        </div>
-
-        {/* Risk Badge */}
-        <RiskBadge level={approval.riskLevel} />
-
-        {/* Quick Revoke Button */}
-        {!isRevoked && (
+      {/* Main Row - Mobile-optimized layout */}
+      <div className="p-3 sm:p-4">
+        {/* Top row: Checkbox, Token Info, Expand Button */}
+        <div className="flex items-start gap-2 sm:gap-3">
+          {/* Checkbox */}
           <button
-            onClick={handleRevoke}
-            disabled={!isConnected || !isCorrectChain || isRevoking}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-              !isConnected || !isCorrectChain
-                ? 'bg-sentinel-surface text-sentinel-muted cursor-not-allowed'
-                : isRevoking
-                ? 'bg-status-warning/20 text-status-warning cursor-wait'
-                : 'bg-status-danger text-white hover:bg-red-600'
+            onClick={onSelect}
+            className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0 mt-0.5 touch-manipulation ${
+              isSelected
+                ? 'bg-sentinel-primary border-sentinel-primary'
+                : 'border-sentinel-border hover:border-sentinel-primary'
             }`}
           >
-            {isRevoking ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {getStatusText()}
-              </>
-            ) : (
-              <>
-                <DollarSign className="w-4 h-4" />
-                Revoke ($1 + gas)
-              </>
-            )}
+            {isSelected && <CheckCircle className="w-3 h-3 text-white" />}
           </button>
-        )}
 
-        {/* Expand Button */}
-        <button
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="p-2 hover:bg-sentinel-surface rounded-lg transition-colors"
-        >
-          <ChevronDown
-            className={`w-5 h-5 text-sentinel-muted transition-transform ${
-              isExpanded ? 'rotate-180' : ''
-            }`}
-          />
-        </button>
+          {/* Token Info - takes available space */}
+          <div className="flex-1 min-w-0 overflow-hidden">
+            {/* Token name and badges */}
+            <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 mb-1">
+              <span className="font-semibold text-sm sm:text-base">{approval.token.symbol}</span>
+              <span className="text-xs text-sentinel-muted hidden sm:inline">{approval.token.name}</span>
+              {isRevoked && (
+                <span className="px-1.5 sm:px-2 py-0.5 text-[10px] sm:text-xs bg-status-safe/20 text-status-safe rounded-full inline-flex items-center gap-0.5 sm:gap-1">
+                  <CheckCircle className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                  Revoked
+                </span>
+              )}
+              {approval.isMalicious && !isRevoked && (
+                <span className="px-1.5 sm:px-2 py-0.5 text-[10px] sm:text-xs bg-status-danger-bg text-status-danger rounded-full">
+                  Malicious
+                </span>
+              )}
+              {approval.isUnlimited && !approval.isMalicious && !isRevoked && (
+                <span className="px-1.5 sm:px-2 py-0.5 text-[10px] sm:text-xs bg-status-warning-bg text-status-warning rounded-full">
+                  Unlimited
+                </span>
+              )}
+            </div>
+            {/* Spender address */}
+            <div className="flex items-center gap-1 sm:gap-2 text-[10px] sm:text-xs text-sentinel-muted">
+              <span className="flex-shrink-0">Spender:</span>
+              <span className="font-mono truncate">
+                {approval.spenderLabel || `${approval.spender.slice(0, 6)}...${approval.spender.slice(-4)}`}
+              </span>
+            </div>
+          </div>
+
+          {/* Expand Button - Always visible */}
+          <button
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="p-1.5 sm:p-2 hover:bg-sentinel-surface rounded-lg transition-colors flex-shrink-0 touch-manipulation"
+          >
+            <ChevronDown
+              className={`w-4 h-4 sm:w-5 sm:h-5 text-sentinel-muted transition-transform ${
+                isExpanded ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* Bottom row: Risk Badge and Revoke Button - SEPARATE LINE for mobile */}
+        <div className="flex items-center justify-between gap-2 sm:gap-3 mt-2 sm:mt-3 ml-7 sm:ml-8">
+          {/* Risk Badge - fixed width container to prevent overlap */}
+          <div className="risk-badge-container">
+            <RiskBadge level={approval.riskLevel} />
+          </div>
+
+          {/* Quick Revoke Button - fixed width */}
+          {!isRevoked && (
+            <button
+              onClick={handleRevoke}
+              disabled={!isConnected || !isCorrectChain || isRevoking}
+              className={`px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg text-[11px] sm:text-sm font-medium transition-all inline-flex items-center gap-1 sm:gap-1.5 flex-shrink-0 touch-manipulation ${
+                !isConnected || !isCorrectChain
+                  ? 'bg-sentinel-surface text-sentinel-muted cursor-not-allowed'
+                  : isRevoking
+                  ? 'bg-status-warning/20 text-status-warning cursor-wait'
+                  : 'bg-status-danger text-white hover:bg-red-600'
+              }`}
+            >
+              {isRevoking ? (
+                <>
+                  <Loader2 className="w-3 h-3 sm:w-4 sm:h-4 animate-spin" />
+                  <span className="hidden sm:inline">{getStatusText()}</span>
+                  <span className="sm:hidden">...</span>
+                </>
+              ) : (
+                <>
+                  <DollarSign className="w-3 h-3 sm:w-4 sm:h-4" />
+                  <span className="hidden sm:inline">Revoke ($1 + gas)</span>
+                  <span className="sm:hidden">Revoke</span>
+                </>
+              )}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Success/Error Messages */}
@@ -713,18 +725,22 @@ function ApprovalCard({
 }
 
 function RiskBadge({ level }: { level: RiskLevel }) {
-  const config = {
+  const config: Record<RiskLevel, { bg: string; text: string; label: string }> = {
     CRITICAL: { bg: 'bg-red-500/20', text: 'text-red-400', label: 'Critical' },
     HIGH: { bg: 'bg-orange-500/20', text: 'text-orange-400', label: 'High' },
     MEDIUM: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', label: 'Medium' },
     LOW: { bg: 'bg-green-500/20', text: 'text-green-400', label: 'Low' },
   };
 
-  const { bg, text, label } = config[level];
+  // Default to LOW if level is not recognized
+  const { bg, text, label } = config[level] || config.LOW;
 
   return (
-    <span className={`px-3 py-1 rounded-full text-xs font-medium ${bg} ${text}`}>
-      {label} Risk
+    <span 
+      className={`inline-flex items-center px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-full text-[10px] sm:text-xs font-medium ${bg} ${text}`}
+      style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+    >
+      {label}
     </span>
   );
 }

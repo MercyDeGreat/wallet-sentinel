@@ -46,7 +46,7 @@ export default function HomePage() {
   };
 
   return (
-    <main className="min-h-screen pb-20">
+    <main className="min-h-screen pb-6">
       <Header />
 
       <div className="max-w-7xl mx-auto px-4 py-8">
