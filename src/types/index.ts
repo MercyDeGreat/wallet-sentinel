@@ -13,56 +13,206 @@
 // Supported blockchain networks
 export type Chain = 'ethereum' | 'base' | 'bnb' | 'solana';
 
-// Security status levels
-// CRITICAL: Distinguish between HISTORICAL and ACTIVE compromise
-// - Historical: Past exploit occurred but all malicious access revoked
-// - Active: Ongoing threat with active approvals or drainer access
+// ============================================
+// SECURITY STATUS LEVELS - REDESIGNED 2026-01
+// ============================================
+// 
+// THREE DISTINCT WALLET STATES:
 //
-// HARD RULE (2024-01 Security Fix):
-// ACTIVE_COMPROMISE_DRAINER MUST override ALL other statuses when ANY
-// drainer behavior is detected within the last 90 days. This prevents
-// false negatives where active drainers are incorrectly labeled as "Safe"
-// or "Previously Compromised (Resolved)".
+// 1. ACTIVELY_COMPROMISED (CRITICAL - RED)
+//    Show ONLY if at least ONE of the following is true:
+//    - Funds are being swept automatically within seconds/minutes of receiving
+//    - Repeated drain patterns to the same destination in real-time
+//    - Fresh approvals + immediate value extraction detected
+//    - Private key/signer compromise strongly inferred via behavioral patterns
+//    - Live monitoring shows attacker-triggered transactions without user interaction
+//    REQUIREMENT: Confidence ≥ 80%
+//
+// 2. HISTORICALLY_COMPROMISED / PREVIOUS_ATTACK (WARNING - ORANGE)
+//    Show if:
+//    - Wallet interacted with a known drainer in the past
+//    - Previous sweep events occurred but have stopped
+//    - No active outflows in recent blocks
+//    - No new malicious approvals or contract interactions
+//    - No evidence of current attacker access
+//    REQUIREMENT: Confidence 50-79%
+//
+// 3. RISK_EXPOSURE / USER_ERROR (INFO - YELLOW)
+//    Show if:
+//    - User voluntarily sent assets to a known drainer address
+//    - Phishing contract interaction occurred but no approvals remain
+//    - No automation or repeat patterns exist
+//    - Wallet behavior matches manual user actions
+//    REQUIREMENT: Confidence < 50%
+//
+// CRITICAL RULE: "ACTIVELY COMPROMISED" requires confidence ≥ 80%
+// If confidence is borderline, DOWNGRADE severity.
+
 export type SecurityStatus = 
   | 'SAFE'                      // No risk indicators, no historical compromise
   | 'HIGH_ACTIVITY_WALLET'      // High-activity wallet, NOT malicious - just very active (DEX traders, protocols)
   | 'PROTOCOL_INTERACTION'      // Primarily interacts with known safe protocols (DEXes, bridges, etc.)
-  | 'PREVIOUSLY_COMPROMISED'    // Historical exploit, NO active threat, ≥90 days clean
-  | 'PREVIOUSLY_COMPROMISED_NO_ACTIVITY' // Historical compromise, ZERO drainer signals for ≥90 days
-  | 'POTENTIALLY_COMPROMISED'   // At least one concrete risk signal exists
-  | 'AT_RISK'                   // Active risk indicators present
-  | 'ACTIVELY_COMPROMISED'      // Confirmed ACTIVE compromise (ongoing threat)
-  | 'ACTIVE_COMPROMISE_DRAINER' // ** HARD OVERRIDE ** Active wallet drainer detected - HIGH CERTAINTY ONLY
+  
+  // ============================================
+  // NEW: THREE-STATE CLASSIFICATION SYSTEM
+  // ============================================
+  | 'ACTIVELY_COMPROMISED'      // CRITICAL (RED): Active attacker control confirmed (confidence ≥ 80%)
+  | 'ACTIVE_COMPROMISE_DRAINER' // ** HIGHEST ** Active wallet drainer with ongoing sweep behavior
+  | 'HISTORICALLY_COMPROMISED'  // WARNING (ORANGE): Past compromise, no current attacker access (confidence 50-79%)
+  | 'RISK_EXPOSURE'             // INFO (YELLOW): User error/exposure, no compromise (confidence < 50%)
+  
+  // Legacy statuses (mapped to new system internally)
+  | 'PREVIOUSLY_COMPROMISED'    // → HISTORICALLY_COMPROMISED (for backward compatibility)
+  | 'PREVIOUSLY_COMPROMISED_NO_ACTIVITY' // → HISTORICALLY_COMPROMISED with resolved flag
+  | 'POTENTIALLY_COMPROMISED'   // → RISK_EXPOSURE or HISTORICALLY_COMPROMISED based on confidence
+  | 'AT_RISK'                   // → RISK_EXPOSURE (no active compromise)
   | 'COMPROMISED'               // Legacy: maps to ACTIVELY_COMPROMISED
   | 'INCOMPLETE_DATA';          // Analysis could not complete (RPC failure, partial history)
 
 // ============================================
-// COMPROMISE SUB-STATUS SYSTEM
+// COMPROMISE SUB-STATUS SYSTEM - REDESIGNED 2026-01
 // ============================================
-// Provides granular distinction between resolved and monitored historical compromise
-// These are INFORMATIONAL only - they do NOT increase risk score
+// Provides granular distinction between compromise states
+// These sub-statuses map to the three-state classification:
 //
-// SECURITY FIX (2024-01): Added ACTIVE_DRAINER_DETECTED which OVERRIDES all other sub-statuses
+// ACTIVELY_COMPROMISED states:
+//   - ACTIVE_SWEEP_IN_PROGRESS: Funds being swept in real-time
+//   - ACTIVE_DRAINER_DETECTED: Active wallet drainer with live behavior
+//   - LIVE_ATTACKER_ACCESS: Attacker has active control
+//
+// HISTORICALLY_COMPROMISED states:
+//   - RESOLVED: All threats remediated, ≥30 days clean
+//   - NO_ACTIVE_RISK: Past incident, no current threats, monitoring recommended
+//   - PREVIOUS_ATTACK: Historical drainer interaction, attack has stopped
+//
+// RISK_EXPOSURE states:
+//   - USER_SENT_TO_DRAINER: User voluntarily sent funds (not drained)
+//   - PHISHING_INTERACTION: Phishing interaction but no approvals remain
+//   - NONE: No compromise history
 
 export type CompromiseSubStatus = 
-  | 'RESOLVED'                  // Historical compromise with all threats remediated (≥90 days)
-  | 'NO_ACTIVE_RISK'           // Historical compromise, no active threats, but should be monitored
-  | 'ACTIVE_THREAT'            // Currently compromised with active threat vectors
-  | 'ACTIVE_DRAINER_DETECTED'  // ** HARD OVERRIDE ** Active drainer behavior detected (<90 days)
+  // ACTIVELY_COMPROMISED sub-states (CRITICAL - RED)
+  | 'ACTIVE_SWEEP_IN_PROGRESS'  // Funds being swept within seconds/minutes of receiving
+  | 'ACTIVE_DRAINER_DETECTED'   // Active wallet drainer behavior (<7 days)
+  | 'LIVE_ATTACKER_ACCESS'      // Attacker has demonstrable active control
+  | 'ACTIVE_THREAT'             // Currently compromised with active threat vectors
+  
+  // HISTORICALLY_COMPROMISED sub-states (WARNING - ORANGE)
+  | 'RESOLVED'                  // Historical compromise, all remediated (≥30 days)
+  | 'NO_ACTIVE_RISK'           // Historical compromise, no active threats, monitor
+  | 'PREVIOUS_ATTACK'          // Past attack stopped, no ongoing activity
+  
+  // RISK_EXPOSURE sub-states (INFO - YELLOW)
+  | 'USER_SENT_TO_DRAINER'     // User voluntarily sent to known drainer
+  | 'PHISHING_INTERACTION'     // Phishing interaction, no active approvals
+  | 'INDIRECT_EXPOSURE'        // Indirect contact with compromised wallet
+  
+  // No issues
   | 'NONE';                    // No compromise history
+
+// ============================================
+// CONFIDENCE-GATED CLASSIFICATION
+// ============================================
+// The three-state classification requires confidence thresholds:
+// - ACTIVELY_COMPROMISED: ≥80% confidence (strong live evidence)
+// - HISTORICALLY_COMPROMISED: 50-79% confidence (past indicators)
+// - RISK_EXPOSURE: <50% confidence (weak/circumstantial)
+//
+// If confidence is borderline, ALWAYS downgrade severity.
+
+export interface CompromiseClassification {
+  // Final wallet state (one of the three states)
+  state: 'ACTIVELY_COMPROMISED' | 'HISTORICALLY_COMPROMISED' | 'RISK_EXPOSURE' | 'SAFE';
+  
+  // Confidence in this classification (0-100)
+  confidence: number;
+  
+  // Sub-status for granular UI display
+  subStatus: CompromiseSubStatus;
+  
+  // Evidence that supports this classification
+  activeIndicators: ActiveCompromiseIndicator[];
+  historicalIndicators: HistoricalCompromiseIndicator[];
+  
+  // User-facing explanation (calm, non-panic language)
+  explanation: StatusExplanation;
+  
+  // Whether this is a first scan (affects messaging)
+  isFirstScan: boolean;
+  
+  // Timestamp of classification
+  classifiedAt: string;
+}
+
+// Indicators for ACTIVE compromise (requires ≥80% confidence)
+export interface ActiveCompromiseIndicator {
+  type: 'LIVE_SWEEP' | 'REPEATED_DRAIN' | 'FRESH_APPROVAL_EXTRACTION' | 'KEY_COMPROMISE_BEHAVIOR' | 'ATTACKER_TRIGGERED_TX';
+  description: string;
+  evidence: {
+    txHash?: string;
+    timestamp?: string;
+    amount?: string;
+    destination?: string;
+  };
+  confidence: number;
+  isRealTime: boolean; // Must be TRUE for active classification
+}
+
+// Indicators for HISTORICAL compromise (confidence 50-79%)
+export interface HistoricalCompromiseIndicator {
+  type: 'PAST_DRAINER_INTERACTION' | 'STOPPED_SWEEP' | 'NO_RECENT_OUTFLOWS' | 'REVOKED_APPROVALS' | 'DORMANT_ATTACKER';
+  description: string;
+  evidence: {
+    txHash?: string;
+    timestamp?: string;
+    daysSinceIncident?: number;
+  };
+  confidence: number;
+  hasEnded: boolean; // Must be TRUE for historical classification
+}
+
+// User-facing explanation with calm, explanatory wording
+export interface StatusExplanation {
+  // Short status label
+  label: string;
+  
+  // One-line summary
+  summary: string;
+  
+  // Detailed explanation (2-3 sentences)
+  details: string;
+  
+  // Why this status was assigned
+  reasoning: string;
+  
+  // Recommended action (if any)
+  action?: string;
+  
+  // Severity indicator for UI styling
+  severity: 'CRITICAL' | 'WARNING' | 'INFO' | 'SAFE';
+  
+  // Icon suggestion
+  icon: 'alert-octagon' | 'alert-triangle' | 'info' | 'shield-check';
+  
+  // Color scheme
+  color: 'red' | 'orange' | 'yellow' | 'green' | 'gray';
+}
 
 // ============================================
 // RECENCY-AWARE THREAT URGENCY LEVELS
 // ============================================
 // Detection confidence MUST scale with time since last activity.
-// Any activity <90 days = ACTIVE, not historical.
+// Redesigned thresholds for the three-state system:
+// - <7 days = potentially ACTIVE (needs live indicators to confirm)
+// - 7-30 days = likely HISTORICAL (attack stopped)
+// - >30 days = definitely HISTORICAL
 
 export type DrainerActivityRecency = 
-  | 'CRITICAL'   // <24h activity - IMMEDIATE threat
-  | 'HIGH'       // <7d activity - HIGH priority threat
-  | 'MEDIUM'     // <30d activity - MEDIUM priority, still ACTIVE
-  | 'LOW'        // <90d activity - LOW but STILL ACTIVE (not historical)
-  | 'HISTORICAL' // ≥90d since last activity - MAY be considered historical
+  | 'CRITICAL'   // <24h activity - potential IMMEDIATE threat
+  | 'HIGH'       // <7d activity - HIGH priority, may be active
+  | 'MEDIUM'     // 7-30d activity - likely HISTORICAL
+  | 'LOW'        // 30-90d activity - definitely HISTORICAL
+  | 'HISTORICAL' // ≥90d since last activity - old incident
   | 'NONE';      // No drainer activity detected
 
 export interface DrainerActivityRecencyInfo {
@@ -100,26 +250,41 @@ export interface DrainerBehaviorDetection {
 }
 
 // ============================================
-// STATUS PRIORITY (for sorting/display)
+// STATUS PRIORITY (for sorting/display) - REDESIGNED 2026-01
 // ============================================
-// Higher priority = more severe
-// Previously compromised (Resolved/No Active Risk) does NOT increase risk score
-// These are purely informational badges
+// Priority levels aligned with THREE-STATE classification:
 //
-// CRITICAL: ACTIVE_COMPROMISE_DRAINER has HIGHEST priority (110)
-// It MUST override all other statuses when active drainer behavior is detected.
+// ACTIVELY_COMPROMISED (100-110): Immediate action required
+// HISTORICALLY_COMPROMISED (20-40): Informational, no active threat
+// RISK_EXPOSURE (10-15): User error, minimal concern
+// SAFE (0-5): No issues
+//
+// CRITICAL: Historical signals NEVER trigger ACTIVELY_COMPROMISED
+// Only live/real-time indicators with ≥80% confidence can do so.
+
 export const SECURITY_STATUS_PRIORITY: Record<SecurityStatus, number> = {
-  'ACTIVE_COMPROMISE_DRAINER': 110, // ** HIGHEST ** Confirmed drainer with HIGH CERTAINTY - NEVER downgrade
-  'ACTIVELY_COMPROMISED': 100,  // Most severe - immediate action required
-  'COMPROMISED': 100,           // Legacy alias
-  'AT_RISK': 80,                // Active risk indicators
-  'POTENTIALLY_COMPROMISED': 60, // Concrete risk signal exists
-  'PREVIOUSLY_COMPROMISED': 20, // Historical only - NO active risk (≥90 days clean)
-  'PREVIOUSLY_COMPROMISED_NO_ACTIVITY': 15, // Historical, verified ≥90 days no activity
-  'INCOMPLETE_DATA': 10,        // Analysis incomplete
-  'HIGH_ACTIVITY_WALLET': 5,    // High activity, NOT malicious - informational only
-  'PROTOCOL_INTERACTION': 3,    // Protocol interaction - informational only
-  'SAFE': 0,                    // No issues
+  // ACTIVELY_COMPROMISED tier (100-110) - CRITICAL, requires live evidence
+  'ACTIVE_COMPROMISE_DRAINER': 110, // ** HIGHEST ** Live sweeper with real-time activity
+  'ACTIVELY_COMPROMISED': 100,      // Confirmed active attacker control
+  'COMPROMISED': 100,               // Legacy alias → ACTIVELY_COMPROMISED
+  
+  // HISTORICALLY_COMPROMISED tier (20-40) - WARNING, past incident only
+  'HISTORICALLY_COMPROMISED': 40,   // Past compromise, attack has stopped
+  'PREVIOUSLY_COMPROMISED': 35,     // Legacy → HISTORICALLY_COMPROMISED  
+  'PREVIOUSLY_COMPROMISED_NO_ACTIVITY': 30, // Historical, verified dormant
+  
+  // RISK_EXPOSURE tier (10-20) - INFO, user error/exposure
+  'RISK_EXPOSURE': 20,              // User error, no compromise
+  'AT_RISK': 18,                    // Legacy → RISK_EXPOSURE
+  'POTENTIALLY_COMPROMISED': 15,    // Legacy → RISK_EXPOSURE or HISTORICAL
+  
+  // INFORMATIONAL tier (1-10) - No concern
+  'INCOMPLETE_DATA': 10,            // Analysis incomplete
+  'HIGH_ACTIVITY_WALLET': 5,        // High activity, NOT malicious
+  'PROTOCOL_INTERACTION': 3,        // Protocol interaction only
+  
+  // SAFE tier (0) - All clear
+  'SAFE': 0,                        // No issues detected
 };
 
 // ============================================

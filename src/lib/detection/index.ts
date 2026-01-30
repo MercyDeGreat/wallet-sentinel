@@ -95,3 +95,30 @@ export * from './base-chain-protection';
 // - Self-transfers, bridges, CEX deposits, legit contracts
 // - Requires REPETITION + AUTOMATION (not single fast transfer)
 export * from './base-sweeper-detector';
+
+// ============================================
+// THREE-STATE CLASSIFIER (2026-01 REDESIGN)
+// ============================================
+// Implements the redesigned compromise classification:
+//
+// 1. ACTIVELY_COMPROMISED (CRITICAL - RED)
+//    - Confidence ≥ 80% required
+//    - ONLY for wallets under ACTIVE attacker control
+//    - Requires LIVE indicators (real-time sweep, ongoing drain)
+//
+// 2. HISTORICALLY_COMPROMISED (WARNING - ORANGE)
+//    - Confidence 50-79%
+//    - Past drainer interaction, attack has STOPPED
+//    - No evidence of CURRENT attacker access
+//    - Explicit message: "Previous compromise — no active control"
+//
+// 3. RISK_EXPOSURE (INFO - YELLOW)
+//    - Confidence < 50%
+//    - User error, voluntary interaction with suspicious addresses
+//    - NOT called "compromised"
+//
+// CRITICAL RULES:
+// - Historical signals NEVER trigger "ACTIVELY COMPROMISED"
+// - First scan NEVER shows "ACTIVELY COMPROMISED" without live evidence
+// - Confidence < 80% → DOWNGRADE to lower severity
+export * from './three-state-classifier';

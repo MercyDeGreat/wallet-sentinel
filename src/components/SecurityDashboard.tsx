@@ -344,6 +344,77 @@ function OverviewTab({
         </div>
       )}
       
+      {/* HISTORICALLY_COMPROMISED Banner - Past compromise, no active threat (NEW THREE-STATE) */}
+      {result?.securityStatus === 'HISTORICALLY_COMPROMISED' && (
+        <div className="lg:col-span-2">
+          <div className="glass-card rounded-xl p-6 border-l-4 border-orange-500 bg-orange-500/5">
+            <h3 className="font-display font-semibold text-lg mb-3 flex items-center gap-2 text-orange-400">
+              <AlertTriangle className="w-5 h-5" />
+              ⚠️ Previous Compromise Detected — No Active Attacker Control Observed
+            </h3>
+            <p className="text-sentinel-muted mb-4">
+              This wallet interacted with a known drainer or experienced a sweep event in the past.
+              However, <strong className="text-orange-300">no active attacker control or ongoing outflows</strong> are 
+              currently detected. The attack appears to have stopped.
+            </p>
+            <div className="bg-sentinel-surface rounded-lg p-4 space-y-2">
+              <div className="flex items-center gap-2 text-sm">
+                <CheckCircle className="w-4 h-4 text-status-safe" />
+                <span className="text-sentinel-muted">No active outflows in recent blocks</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <CheckCircle className="w-4 h-4 text-status-safe" />
+                <span className="text-sentinel-muted">No new malicious approvals or contract interactions</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <CheckCircle className="w-4 h-4 text-status-safe" />
+                <span className="text-sentinel-muted">No evidence of current attacker access</span>
+              </div>
+            </div>
+            <p className="text-xs text-sentinel-muted mt-3">
+              ℹ️ <strong>Why this status?</strong> Historical drainer interactions were detected, but the attack has 
+              stopped. This wallet is not under active attacker control. Monitor closely and consider 
+              revoking any remaining suspicious approvals.
+            </p>
+          </div>
+        </div>
+      )}
+      
+      {/* RISK_EXPOSURE Banner - User error or exposure, NOT compromised (NEW THREE-STATE) */}
+      {result?.securityStatus === 'RISK_EXPOSURE' && (
+        <div className="lg:col-span-2">
+          <div className="glass-card rounded-xl p-6 border-l-4 border-yellow-500 bg-yellow-500/5">
+            <h3 className="font-display font-semibold text-lg mb-3 flex items-center gap-2 text-yellow-400">
+              <Info className="w-5 h-5" />
+              Risk Exposure Detected — Not Compromised
+            </h3>
+            <p className="text-sentinel-muted mb-4">
+              This wallet shows signs of <strong className="text-yellow-300">potential risk exposure</strong>, 
+              but <strong className="text-yellow-300">no compromise has been confirmed</strong>. This may indicate:
+            </p>
+            <div className="bg-sentinel-surface rounded-lg p-4 space-y-2">
+              <div className="flex items-center gap-2 text-sm">
+                <Info className="w-4 h-4 text-yellow-400" />
+                <span className="text-sentinel-muted">User voluntarily sent assets to a known drainer address</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <Info className="w-4 h-4 text-yellow-400" />
+                <span className="text-sentinel-muted">Phishing contract interaction occurred but no approvals remain</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <Info className="w-4 h-4 text-yellow-400" />
+                <span className="text-sentinel-muted">Wallet behavior matches manual user actions (no automation)</span>
+              </div>
+            </div>
+            <p className="text-xs text-sentinel-muted mt-3">
+              ℹ️ <strong>Why this status?</strong> Low-confidence risk signals were detected, but no active 
+              compromise or historical attack was confirmed. This is likely user error or 
+              circumstantial exposure. No automated or repeat patterns exist.
+            </p>
+          </div>
+        </div>
+      )}
+      
       {/* ACTIVE_COMPROMISE_DRAINER Banner - Known drainer detected */}
       {result?.securityStatus === 'ACTIVE_COMPROMISE_DRAINER' && (
         <div className="lg:col-span-2">
@@ -401,6 +472,8 @@ function OverviewTab({
       {/* Critical Actions - For other non-safe statuses */}
       {result?.securityStatus !== 'SAFE' && 
        result?.securityStatus !== 'PREVIOUSLY_COMPROMISED' && 
+       result?.securityStatus !== 'HISTORICALLY_COMPROMISED' && 
+       result?.securityStatus !== 'RISK_EXPOSURE' && 
        result?.securityStatus !== 'ACTIVELY_COMPROMISED' && (
         <div className="lg:col-span-2">
           <div className="glass-card rounded-xl p-6 border-l-4 border-status-danger">
@@ -611,6 +684,23 @@ function StatusBadge({
       text: 'text-blue-400',
       dot: 'status-dot-info',
     },
+    // NEW: Three-state classification statuses
+    HISTORICALLY_COMPROMISED: {
+      icon: Shield, // Shield icon - past incident, no active threat
+      label: '⚠️ PREVIOUS COMPROMISE',
+      bg: 'bg-orange-500/10',       // Orange for historical warning
+      border: 'border-orange-500/30',
+      text: 'text-orange-400',      // Orange text - warning tone
+      dot: 'status-dot-warning',
+    },
+    RISK_EXPOSURE: {
+      icon: Info, // Info icon - not compromised, just exposure
+      label: 'RISK EXPOSURE',
+      bg: 'bg-yellow-500/10',       // Yellow for informational
+      border: 'border-yellow-500/30',
+      text: 'text-yellow-400',      // Yellow text - informational
+      dot: 'status-dot-info',
+    },
     POTENTIALLY_COMPROMISED: {
       icon: AlertTriangle,
       label: 'POTENTIALLY COMPROMISED',
@@ -758,6 +848,13 @@ function getStatusBorderClass(status: SecurityStatus): string {
     case 'PREVIOUSLY_COMPROMISED_NO_ACTIVITY':
       // Blue border - informational, NOT warning/danger
       return 'border-l-4 border-l-blue-500';
+    // NEW: Three-state classification statuses
+    case 'HISTORICALLY_COMPROMISED':
+      // Orange border - past compromise, no active threat
+      return 'border-l-4 border-l-orange-500';
+    case 'RISK_EXPOSURE':
+      // Yellow border - user error/exposure, NOT compromised
+      return 'border-l-4 border-l-yellow-500';
     case 'POTENTIALLY_COMPROMISED':
       return 'border-l-4 border-l-orange-500';
     case 'AT_RISK':
