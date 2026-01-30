@@ -513,8 +513,4 @@ export function getDrainerDNAService(): DrainerDNAService {
   return drainerDNAServiceInstance;
 }
 
-// ============================================
-// EXPORTS
-// ============================================
-
-export { DrainerDNAService };
+// DrainerDNAService is exported inline above

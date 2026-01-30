@@ -141,7 +141,9 @@ export function getSecurityStatusColor(status: SecurityStatus): string {
     SAFE: 'text-status-safe',
     HIGH_ACTIVITY_WALLET: 'text-emerald-400', // High activity, NOT malicious
     PROTOCOL_INTERACTION: 'text-blue-400', // Protocol interactions detected
-    PREVIOUSLY_COMPROMISED: 'text-amber-400', // Amber for historical (cautionary but not danger)
+    HISTORICALLY_COMPROMISED: 'text-amber-400', // Amber for historical (cautionary but not danger)
+    RISK_EXPOSURE: 'text-yellow-400', // Yellow for user error/exposure
+    PREVIOUSLY_COMPROMISED: 'text-amber-400', // Legacy - maps to HISTORICALLY_COMPROMISED
     PREVIOUSLY_COMPROMISED_NO_ACTIVITY: 'text-blue-400', // Blue for no recent activity
     POTENTIALLY_COMPROMISED: 'text-orange-400',
     AT_RISK: 'text-status-warning',

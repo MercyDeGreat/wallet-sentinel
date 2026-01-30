@@ -304,17 +304,4 @@ export function getKnownDrainerFamily(address: string): { familyId: string; fami
   return service.getKnownDrainerFamily(address);
 }
 
-// ============================================
-// EXPORTS
-// ============================================
-
-export {
-  adaptTransactionData,
-  adaptTokenTransferData,
-  adaptApprovalData,
-  enhanceWithDrainerDNA,
-  formatDrainerDNAForAPI,
-  generateDisplayData,
-  isKnownDrainerAddress,
-  getKnownDrainerFamily,
-};
+// All functions are exported inline above
