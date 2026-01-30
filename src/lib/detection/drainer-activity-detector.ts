@@ -389,7 +389,7 @@ export function detectDrainerActivity(
     
     if (baseSweeperResult && baseSweeperResult.isSweeper && baseSweeperResult.confidence >= 85) {
       detectedSignals.push({
-        signal: 'IMMEDIATE_OUTFLOW_PATTERN',
+        signal: 'AUTOMATED_SWEEPER_BEHAVIOR',
         detectedAt: new Date().toISOString(),
         txHash: transactions[0]?.hash || 'N/A',
         confidence: baseSweeperResult.confidence,
