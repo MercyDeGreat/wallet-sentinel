@@ -71,7 +71,13 @@ import {
   TransactionForAnalysis,
   UserBehaviorClassification,
 } from './behavior-analyzer';
-import { isKnownDrainer, getDrainerType } from './drainer-addresses';
+import { isKnownDrainer, getDrainerType, isBaseSweeperAddress } from './drainer-addresses';
+import { 
+  detectBaseSweeperBot, 
+  BaseTransactionForSweeper,
+  BaseSweeperDetectionResult,
+  KNOWN_BASE_SWEEPERS,
+} from './base-sweeper-detector';
 import {
   labelTransaction,
   labelTransactions,
@@ -229,6 +235,83 @@ export async function detectDrainerPatterns(
   
   // Safe array guard
   const safeTxs = Array.isArray(transactions) ? transactions : [];
+  const normalizedWalletAddress = walletAddress.toLowerCase();
+  
+  // ============================================
+  // CRITICAL (HIGHEST PRIORITY): KNOWN DRAINER/SWEEPER DATABASE CHECK
+  // ============================================
+  // THIS CHECK MUST COME FIRST - before ANY other logic.
+  // If the wallet address itself is in our verified database, it MUST be flagged
+  // regardless of its transaction history, chain, or any other factor.
+  // 
+  // This prevents known sweepers from showing as "SAFE" due to:
+  // - No transactions
+  // - DEX-only activity patterns
+  // - Chain-specific heuristics not matching
+  if (isKnownDrainer(normalizedWalletAddress)) {
+    const drainerType = getDrainerType(normalizedWalletAddress);
+    const isBaseSweeper = isBaseSweeperAddress(normalizedWalletAddress);
+    
+    const threatTitle = drainerType || 'Confirmed Drainer/Sweeper';
+    const threatDescription = isBaseSweeper
+      ? 'Wallet shows automated sweep behavior. Funds are programmatically forwarded immediately after receipt, consistent with post-compromise sweeper infrastructure.'
+      : `This address is a confirmed ${drainerType || 'drainer'}. Do not interact.`;
+    
+    const threat: DetectedThreat = {
+      id: `known-drainer-${Date.now()}`,
+      type: 'WALLET_DRAINER',
+      severity: 'CRITICAL',
+      title: threatTitle,
+      description: threatDescription,
+      technicalDetails: `Database match: ${drainerType || 'Known Drainer'} (Chain: ${chain})`,
+      detectedAt: new Date().toISOString(),
+      relatedAddresses: [normalizedWalletAddress],
+      relatedTransactions: [],
+      ongoingRisk: true,
+    };
+    
+    return {
+      threats: [threat],
+      behaviorAnalysis: {
+        classification: 'CONFIRMED_SWEEPER',
+        walletRole: 'ATTACKER',
+        confidence: 100,
+        isDefinitelyMalicious: true,
+        isProbablyMalicious: true,
+        showCriticalAlert: true,
+        explanation: isBaseSweeper
+          ? 'CRITICAL: This wallet is a VERIFIED SWEEPER BOT. Funds are programmatically forwarded immediately after receipt. DO NOT send any funds to this address.'
+          : `CRITICAL: This wallet is a CONFIRMED ${drainerType || 'DRAINER'}. DO NOT interact with this address.`,
+        evidence: [{
+          type: 'KNOWN_DRAINER_RECIPIENT',
+          description: `Address is in verified malicious database: ${drainerType || 'Known Drainer'}`,
+          weight: 50,
+          data: { 
+            address: normalizedWalletAddress, 
+            drainerType,
+            chain,
+          },
+        }],
+        riskScore: 100,
+        riskLevel: 'CRITICAL',
+        threats: [threat],
+        detectedIntents: [],
+        explainability: {
+          classificationReason: `Matched verified malicious database: ${drainerType || 'Known Drainer'}`,
+          behavioralTriggers: ['ADDRESS_IN_KNOWN_DATABASE'],
+          userIntentDetected: [],
+          protocolInteractionDetected: [],
+          sweeperRuledOutReasons: [],
+          failedSweeperCriteria: [],
+          passedSweeperCriteria: ['Known drainer/sweeper address'],
+        },
+      },
+      excludedFromFlagging: [],
+      isDEXOnlyActivity: false,
+    };
+  }
+  
+  // If no transactions but address is NOT in known database, return NEW_WALLET
   if (safeTxs.length === 0) {
     return {
       threats: [],
@@ -458,6 +541,71 @@ export async function detectDrainerPatterns(
       excludedFromFlagging: safeTxs.map(tx => tx.to?.toLowerCase()).filter(Boolean) as string[],
       isDEXOnlyActivity: true,
     };
+  }
+
+  // ============================================
+  // STEP 0d: BASE CHAIN SWEEPER BOT DETECTION
+  // ============================================
+  // Base chain requires different detection logic:
+  // - Sequencer-based ordering (no public mempool)
+  // - Same-block or near-zero-latency reactions
+  // - Gas price is NOT a reliable signal
+  // - Reaction-based detection instead of mempool signals
+  if (chain === 'base') {
+    const baseSweeperResult = runBaseChainSweeperDetection(walletAddress, safeTxs);
+    
+    if (baseSweeperResult && baseSweeperResult.isSweeper && baseSweeperResult.confidence >= 85) {
+      const sweeperThreat: DetectedThreat = {
+        id: `base-sweeper-${Date.now()}`,
+        type: 'WALLET_DRAINER',
+        severity: baseSweeperResult.severity,
+        title: baseSweeperResult.classification,
+        description: baseSweeperResult.explanation,
+        technicalDetails: `Heuristics: ${baseSweeperResult.heuristics.heuristicsMet.join('; ')}`,
+        detectedAt: new Date().toISOString(),
+        relatedAddresses: baseSweeperResult.relatedAddresses,
+        relatedTransactions: baseSweeperResult.drainPatterns.map(p => p.inboundTxHash),
+        ongoingRisk: true,
+      };
+      
+      return {
+        threats: [sweeperThreat],
+        behaviorAnalysis: {
+          classification: 'CONFIRMED_SWEEPER',
+          walletRole: 'ATTACKER',
+          confidence: baseSweeperResult.confidence,
+          isDefinitelyMalicious: true,
+          isProbablyMalicious: true,
+          showCriticalAlert: baseSweeperResult.severity === 'CRITICAL',
+          explanation: baseSweeperResult.explanation,
+          evidence: [{
+            type: 'RAPID_DRAIN_NO_PROTOCOL',
+            description: `Base chain sweeper: ${baseSweeperResult.heuristics.heuristicsMetCount}/6 heuristics met`,
+            weight: 50,
+            data: { 
+              chain: 'base',
+              classification: baseSweeperResult.classification,
+              heuristics: baseSweeperResult.heuristics.heuristicsMet,
+            },
+          }],
+          riskScore: baseSweeperResult.confidence,
+          riskLevel: baseSweeperResult.severity === 'CRITICAL' ? 'CRITICAL' : 'HIGH',
+          threats: [sweeperThreat],
+          detectedIntents: [],
+          explainability: {
+            classificationReason: baseSweeperResult.explanation,
+            behavioralTriggers: baseSweeperResult.heuristics.heuristicsMet,
+            userIntentDetected: [],
+            protocolInteractionDetected: [],
+            sweeperRuledOutReasons: [],
+            failedSweeperCriteria: baseSweeperResult.heuristics.heuristicsFailed,
+            passedSweeperCriteria: baseSweeperResult.heuristics.heuristicsMet,
+          },
+        },
+        excludedFromFlagging: [],
+        isDEXOnlyActivity: false,
+      };
+    }
   }
 
   // ============================================
@@ -1504,4 +1652,37 @@ export function isExchangeTransaction(from: string, to: string): boolean {
 export function getExchangeName(address: string): string | null {
   const normalized = address?.toLowerCase() || '';
   return EXCHANGE_HOT_WALLETS.get(normalized) || null;
+}
+
+// ============================================
+// BASE CHAIN SWEEPER DETECTION HELPER
+// ============================================
+
+/**
+ * Run Base-specific sweeper detection in the detection engine.
+ * 
+ * BASE CHAIN DIFFERENCES:
+ * - Sequencer-based ordering (no public mempool)
+ * - Same-block or near-zero-latency reactions
+ * - Gas price is NOT a reliable signal
+ * - Reaction-based detection instead of mempool signals
+ */
+function runBaseChainSweeperDetection(
+  walletAddress: string,
+  transactions: TransactionData[]
+): BaseSweeperDetectionResult | null {
+  // Convert to Base sweeper format
+  const baseTxs: BaseTransactionForSweeper[] = transactions.map(tx => ({
+    hash: tx.hash,
+    from: tx.from,
+    to: tx.to,
+    value: tx.value,
+    blockNumber: tx.blockNumber,
+    timestamp: tx.timestamp,
+    methodId: tx.methodId,
+    isETH: true,
+  }));
+  
+  // Run Base sweeper detection
+  return detectBaseSweeperBot(walletAddress, baseTxs);
 }

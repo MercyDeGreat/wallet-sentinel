@@ -165,6 +165,13 @@ export const KNOWN_DRAINER_RECIPIENTS: string[] = [
   
   // MS Drainer wallets
   '0x0000000083fc54c35b9b83de16c67c73b1a7b000',
+  
+  // ============================================
+  // VERIFIED SWEEPER BOT ADDRESSES (Multi-Chain)
+  // ============================================
+  // These addresses exhibit sweeper bot behavior and should be flagged
+  // on ALL chains (Ethereum, Base, etc.)
+  '0x7fcd4c52a0da9e18ec1d43ae50cd376c2b469e17', // Confirmed sweeper bot
 ];
 
 // ============================================

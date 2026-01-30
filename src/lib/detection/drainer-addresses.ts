@@ -67,6 +67,13 @@ export const DRAINER_RECIPIENTS: string[] = [
   '0x0000000083fc54c35b9b83de16c67c73b1a7b000',
   
   // ============================================
+  // VERIFIED SWEEPER BOT ADDRESSES (Multi-Chain)
+  // ============================================
+  // CRITICAL: This address MUST be flagged on ALL chains (Ethereum, Base, etc.)
+  // It shows automated sweep behavior - funds are forwarded immediately after receipt
+  '0x7fcd4c52a0da9e18ec1d43ae50cd376c2b469e17',
+  
+  // ============================================
   // REPORTED ACTIVE DRAINERS - SECURITY TEAM VERIFIED
   // ============================================
   // These addresses were reported as active drainers by security engineers.
@@ -83,6 +90,34 @@ export const DRAINER_RECIPIENTS: string[] = [
   '0x4735fbecf1db342282ad5baef585ee301b1bce25',
   '0xf2dd8eb79625109e2dd87c4243708e1485a85655',
 ];
+
+// ============================================
+// SWEEPER BOT ADDRESSES - VERIFIED (MULTI-CHAIN)
+// ============================================
+// These addresses exhibit sweeper bot behavior and should be detected on ALL chains.
+// Originally identified on Base chain but sweeper bots operate across chains.
+// 
+// CRITICAL: These addresses are checked by isKnownDrainer() which is chain-agnostic.
+// They will be flagged on Ethereum, Base, and all other supported chains.
+//
+// Detection criteria:
+// - Incoming ETH/tokens → immediate outgoing within ≤1 block
+// - Never accumulates balance (ends ≈0 after each inbound)
+// - Programmatic destinations (fixed or rotating hot wallets)
+// - Machine-consistent gas usage
+// - Pattern repeats across multiple unrelated sender wallets
+export const BASE_SWEEPER_ADDRESSES: string[] = [
+  // VERIFIED SWEEPER: Originally reported on Base, but detected on ALL chains
+  // This wallet programmatically forwards funds immediately after receipt
+  '0x7fcd4c52a0da9e18ec1d43ae50cd376c2b469e17',
+];
+
+// Combined check for Base sweeper addresses
+export function isBaseSweeperAddress(address: string): boolean {
+  if (!address) return false;
+  const normalized = address.toLowerCase();
+  return BASE_SWEEPER_ADDRESSES.some(s => s.toLowerCase() === normalized);
+}
 
 // Function to check if an address is a known drainer
 // ============================================
@@ -115,10 +150,33 @@ export function isKnownDrainer(address: string): boolean {
   const normalized = address.toLowerCase();
   
   // WHITELIST CHECK
-  if (EXPLICIT_WHITELIST.has(normalized)) return false;
+  if (EXPLICIT_WHITELIST.has(normalized)) {
+    console.log(`[isKnownDrainer] ${normalized.slice(0, 10)}... is WHITELISTED - returning false`);
+    return false;
+  }
   
-  return DRAINER_CONTRACTS.some(d => d.toLowerCase() === normalized) ||
-         DRAINER_RECIPIENTS.some(d => d.toLowerCase() === normalized);
+  // Check each database
+  const inDrainerContracts = DRAINER_CONTRACTS.some(d => d.toLowerCase() === normalized);
+  const inDrainerRecipients = DRAINER_RECIPIENTS.some(d => d.toLowerCase() === normalized);
+  const inSweeperAddresses = BASE_SWEEPER_ADDRESSES.some(s => s.toLowerCase() === normalized);
+  
+  const isKnown = inDrainerContracts || inDrainerRecipients || inSweeperAddresses;
+  
+  // Debug logging for the specific sweeper address
+  if (normalized === '0x7fcd4c52a0da9e18ec1d43ae50cd376c2b469e17') {
+    console.log(`[isKnownDrainer] *** SWEEPER CHECK ***`);
+    console.log(`[isKnownDrainer] Address: ${normalized}`);
+    console.log(`[isKnownDrainer] In DRAINER_CONTRACTS: ${inDrainerContracts}`);
+    console.log(`[isKnownDrainer] In DRAINER_RECIPIENTS: ${inDrainerRecipients}`);
+    console.log(`[isKnownDrainer] In BASE_SWEEPER_ADDRESSES: ${inSweeperAddresses}`);
+    console.log(`[isKnownDrainer] Final result: ${isKnown}`);
+  }
+  
+  if (isKnown) {
+    console.log(`[isKnownDrainer] ${normalized.slice(0, 10)}... IS KNOWN DRAINER`);
+  }
+  
+  return isKnown;
 }
 
 // Function to get drainer type
@@ -128,6 +186,9 @@ export function getDrainerType(address: string): string | null {
   
   // WHITELIST CHECK
   if (EXPLICIT_WHITELIST.has(normalized)) return null;
+  
+  // Check for sweeper bot addresses FIRST (these are detected on ALL chains)
+  if (isBaseSweeperAddress(normalized)) return 'Active Sweeper Bot';
   
   // Check specific patterns in the address
   if (normalized.includes('db5c8b030ae20308ac975898e09741e7')) return 'Inferno Drainer';

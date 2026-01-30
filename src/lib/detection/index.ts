@@ -73,3 +73,25 @@ export * from './solana-security';
 // RULE 5: "Previously Compromised" handling
 // RULE 6: Risk scoring safeguards (Uniswap=0, ENS=0, Bridge≤1, Exchange=-)
 export * from './base-chain-protection';
+
+// ============================================
+// BASE CHAIN SWEEPER BOT DETECTION (2026-01)
+// ============================================
+// Extends sweeper bot detection for Base chain specifics:
+// - Sequencer-based ordering (no public mempool)
+// - Same-block or near-zero-latency reactions
+// - Gas price is NOT a reliable signal
+// - Reaction-based detection instead of mempool signals
+//
+// HEURISTICS (≥2 must be true to flag):
+// 1. Incoming → outgoing within ≤1 block
+// 2. Never accumulates balance (ending balance ≈ 0)
+// 3. Programmatic destination (fixed or rotating hot wallets)
+// 4. Gas usage is flat and machine-consistent
+// 5. Pattern repeats across many unrelated sender wallets
+// 6. First action after funding is always drain
+//
+// FALSE-POSITIVE GUARDS:
+// - Self-transfers, bridges, CEX deposits, legit contracts
+// - Requires REPETITION + AUTOMATION (not single fast transfer)
+export * from './base-sweeper-detector';

@@ -31,7 +31,12 @@ import type {
   DrainerBehaviorSignal,
 } from '@/types';
 import { isMaliciousAddress, isDrainerRecipient } from './malicious-database';
-import { isKnownDrainer, getDrainerType } from './drainer-addresses';
+import { isKnownDrainer, getDrainerType, isBaseSweeperAddress } from './drainer-addresses';
+import { 
+  detectBaseSweeperBot, 
+  BaseTransactionForSweeper,
+  BaseSweeperDetectionResult,
+} from './base-sweeper-detector';
 import { 
   isSafeContract, 
   isNFTMarketplace, 
@@ -364,6 +369,59 @@ export function detectDrainerActivity(
       downgradeBlockers: ['Address is in verified drainer database'],
       contextClassification: contextResult,
     };
+  }
+
+  // ============================================
+  // PHASE 2b: BASE CHAIN SWEEPER DETECTION
+  // ============================================
+  // Base chain requires different detection logic:
+  // - Sequencer-based ordering (no public mempool)
+  // - Same-block or near-zero-latency reactions
+  // - Gas price is NOT a reliable signal
+  // - Reaction-based detection instead of mempool signals
+  if (chain === 'base') {
+    const baseSweeperResult = runBaseSweeperDetectionForDrainer(
+      normalized,
+      transactions,
+      tokenTransfers,
+      currentTimestamp
+    );
+    
+    if (baseSweeperResult && baseSweeperResult.isSweeper && baseSweeperResult.confidence >= 85) {
+      detectedSignals.push({
+        signal: 'IMMEDIATE_OUTFLOW_PATTERN',
+        detectedAt: new Date().toISOString(),
+        txHash: transactions[0]?.hash || 'N/A',
+        confidence: baseSweeperResult.confidence,
+        details: baseSweeperResult.explanation,
+        relatedAddresses: baseSweeperResult.relatedAddresses,
+      });
+      
+      // Calculate recency from transactions
+      const txTimestamps = [
+        ...transactions.map(t => t.timestamp),
+        ...tokenTransfers.map(t => t.timestamp),
+      ].filter(t => t > 0);
+      
+      const recency = calculateRecencyFromTimestamps(txTimestamps, currentTimestamp);
+      
+      return {
+        shouldOverride: true,
+        detectedSignals,
+        recency,
+        confidence: baseSweeperResult.confidence,
+        canEverBeSafe: false,
+        canBePreviouslyCompromised: !recency.isActive,
+        overrideReason: `BASE CHAIN SWEEPER: ${baseSweeperResult.classification}. ` +
+          `${baseSweeperResult.heuristics.heuristicsMetCount}/6 heuristics met. ` +
+          `Funds are programmatically forwarded immediately after receipt.`,
+        downgradeBlockers: [
+          `Base sweeper detected: ${baseSweeperResult.heuristics.heuristicsMetCount} behavioral signals`,
+          ...baseSweeperResult.heuristics.heuristicsMet,
+        ],
+        contextClassification: contextResult,
+      };
+    }
   }
   
   // ============================================
@@ -861,6 +919,57 @@ function detectImmediateOutboundTransfers_DISABLED(
 }
 
 // ============================================
+// BASE CHAIN SWEEPER DETECTION HELPER
+// ============================================
+
+/**
+ * Run Base-specific sweeper detection for the drainer activity detector.
+ * 
+ * BASE CHAIN DIFFERENCES:
+ * - Sequencer-based ordering (no public mempool)
+ * - Same-block or near-zero-latency reactions
+ * - Gas price is NOT a reliable signal
+ * - Reaction-based detection instead of mempool signals
+ */
+function runBaseSweeperDetectionForDrainer(
+  walletAddress: string,
+  transactions: TransactionForDrainerAnalysis[],
+  tokenTransfers: TokenTransferForDrainerAnalysis[],
+  currentTimestamp: number
+): BaseSweeperDetectionResult | null {
+  // Combine transactions and token transfers into Base sweeper format
+  const baseTxs: BaseTransactionForSweeper[] = [
+    ...transactions.map(tx => ({
+      hash: tx.hash,
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      blockNumber: tx.blockNumber,
+      timestamp: tx.timestamp,
+      gasUsed: tx.gasUsed ? parseInt(tx.gasUsed) : undefined,
+      gasPrice: tx.gasPrice,
+      methodId: tx.methodId,
+      isETH: true,
+    })),
+    ...tokenTransfers.map(t => ({
+      hash: t.hash,
+      from: t.from,
+      to: t.to,
+      value: t.value,
+      blockNumber: t.blockNumber || 0,
+      timestamp: t.timestamp,
+      methodId: undefined,
+      isETH: false,
+      tokenAddress: t.tokenAddress,
+      tokenSymbol: t.tokenSymbol,
+    })),
+  ];
+  
+  // Run Base sweeper detection
+  return detectBaseSweeperBot(walletAddress, baseTxs);
+}
+
+// ============================================
 // EXPORTS
 // ============================================
 
@@ -870,4 +979,5 @@ export {
   RECENCY_MEDIUM_DAYS,
   RECENCY_LOW_DAYS,
   KNOWN_AGGREGATION_HUBS,
+  runBaseSweeperDetectionForDrainer,
 };
