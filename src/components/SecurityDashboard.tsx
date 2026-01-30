@@ -15,18 +15,19 @@ import {
   Layers,
   Info,
 } from 'lucide-react';
-import { WalletAnalysisResult, SecurityStatus, RiskLevel, CompromiseSubStatus } from '@/types';
+import { WalletAnalysisResult, SecurityStatus, RiskLevel, CompromiseSubStatus, WalletTimeline as WalletTimelineType } from '@/types';
 import { ThreatCard } from './ThreatCard';
 import { ApprovalsDashboard } from './ApprovalsDashboard';
 import { RecoveryPlan } from './RecoveryPlan';
 import { EducationalPanel } from './EducationalPanel';
 import { CompromiseStatusBadge, CompromiseStatusCard } from './CompromiseStatusBadge';
+import { WalletTimeline, CompactTimeline } from './WalletTimeline';
 
 interface SecurityDashboardProps {
   result: WalletAnalysisResult;
 }
 
-type Tab = 'overview' | 'threats' | 'approvals' | 'recovery' | 'education';
+type Tab = 'overview' | 'timeline' | 'threats' | 'approvals' | 'recovery' | 'education';
 
 export function SecurityDashboard({ result }: SecurityDashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
@@ -45,6 +46,7 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
 
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
+    { id: 'timeline', label: 'Timeline', count: result.timeline?.events?.length },
     { id: 'threats', label: 'Threats', count: result.detectedThreats.length },
     { id: 'approvals', label: 'Approvals', count: result.approvals.length },
     { id: 'recovery', label: 'Recovery' },
@@ -283,6 +285,22 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
         {activeTab === 'approvals' && (
           <ApprovalsDashboard approvals={safeApprovals} chain={result?.chain || 'ethereum'} />
         )}
+        {activeTab === 'timeline' && result?.timeline && (
+          <div className="glass-card rounded-xl p-6">
+            <WalletTimeline 
+              timeline={result.timeline} 
+              maxVisibleEvents={15}
+              showCurrentStatus={true}
+            />
+          </div>
+        )}
+        {activeTab === 'timeline' && !result?.timeline && (
+          <EmptyState
+            icon={<Clock className="w-12 h-12 text-sentinel-muted" />}
+            title="Timeline Not Available"
+            description="Security timeline data is not available for this wallet analysis."
+          />
+        )}
         {activeTab === 'recovery' && (
           <RecoveryPlan plan={result?.recoveryPlan} recommendations={safeRecommendations} />
         )}
@@ -507,6 +525,22 @@ function OverviewTab({
                 ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Security Timeline Preview */}
+      {result?.timeline && result.timeline.events.length > 0 && (
+        <div className="glass-card rounded-xl p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-display font-semibold">Security Timeline</h3>
+            <button
+              onClick={() => onNavigate('timeline')}
+              className="text-sm text-blue-400 hover:text-blue-300 flex items-center gap-1"
+            >
+              View Full <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+          <CompactTimeline timeline={result.timeline} maxEvents={4} />
         </div>
       )}
 

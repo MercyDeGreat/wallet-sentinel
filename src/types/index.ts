@@ -978,6 +978,15 @@ export interface WalletAnalysisResult {
   
   // Historical compromise data
   historicalCompromise?: HistoricalCompromiseInfo;
+  
+  // ============================================
+  // SECURITY TIMELINE (NEW)
+  // ============================================
+  // Chronological narrative of security events
+  // CRITICAL: Past compromise ≠ Active compromise
+  
+  // Full timeline of security events for this wallet
+  timeline?: WalletTimeline;
 }
 
 // ============================================
@@ -1275,4 +1284,293 @@ export interface LiveMonitoringSession {
   isActive: boolean;
 }
 
+// ============================================
+// WALLET STATUS TIMELINE - ATTACK & RECOVERY NARRATIVE
+// ============================================
+// Chronological timeline that explains:
+// - WHAT happened
+// - WHEN it happened
+// - WHAT changed
+// - CURRENT wallet state
+//
+// CRITICAL: Past compromise ≠ Active compromise
+// The timeline must persist even after status becomes SAFE
+
+/**
+ * Core timeline event types that track wallet security history
+ */
+export type TimelineEventType =
+  | 'COMPROMISE_ENTRY'      // First interaction with malicious contract/approval
+  | 'DRAIN_EVENT'           // Funds transferred to known drainer destination
+  | 'APPROVAL_ABUSE'        // Malicious/high-risk approval granted
+  | 'APPROVAL_REVOKED'      // User revoked a malicious approval
+  | 'THREAT_CEASED'         // No attacker activity for X blocks/hours
+  | 'REMEDIATION_ACTION'    // User took protective action
+  | 'SAFE_STATE_CONFIRMED'  // Wallet confirmed safe (no active threats)
+  | 'MONITORING_STARTED'    // Analysis began
+  | 'STATUS_CHANGE'         // Security status changed
+  | 'SUSPICIOUS_ACTIVITY'   // Suspicious but not confirmed malicious
+  | 'RECOVERY_COMPLETE';    // Full recovery from compromise
+
+/**
+ * Severity level at the time of the event
+ * Used for color-coding the timeline
+ */
+export type TimelineEventSeverity = 
+  | 'CRITICAL'   // 🟥 Red - Active threat/compromise
+  | 'HIGH'       // 🟧 Orange - Threat ceased/historical
+  | 'MEDIUM'     // 🟨 Yellow - Recovery action/remediation
+  | 'LOW'        // 🟦 Blue - Informational
+  | 'SAFE';      // 🟩 Green - Safe state confirmed
+
+/**
+ * Technical reference for an event (transaction, contract, address)
+ */
+export interface TimelineEventReference {
+  type: 'transaction' | 'contract' | 'address' | 'approval' | 'block';
+  value: string;           // Hash, address, or block number
+  label?: string;          // Human-readable label (e.g., "Fake Mint Contract")
+  explorerUrl?: string;    // Direct link to block explorer
+}
+
+/**
+ * A single event in the wallet security timeline
+ */
+export interface TimelineEvent {
+  id: string;                          // Unique event ID
+  timestamp: string;                   // ISO timestamp (block time)
+  blockNumber?: number;                // Block number if available
+  eventType: TimelineEventType;        // Type of event
+  severityAtTime: TimelineEventSeverity; // Severity when event occurred
+  
+  // Human-readable content
+  title: string;                       // Short title (e.g., "Wallet Compromised")
+  description: string;                 // Human-readable description
+  technicalDetails?: string;           // Optional technical explanation
+  
+  // References
+  references: TimelineEventReference[]; // Related tx hashes, contracts, addresses
+  
+  // Context
+  chain: Chain;                        // Which chain this occurred on
+  relatedEventIds?: string[];          // IDs of related events (e.g., drain linked to approval)
+  
+  // UI hints
+  isExpandable: boolean;               // Whether event has expandable details
+  isPersistent: boolean;               // Should persist in timeline even after resolution
+  affectsCurrentStatus: boolean;       // Does this event affect current wallet status?
+}
+
+/**
+ * The complete wallet timeline with current status derivation
+ */
+export interface WalletTimeline {
+  walletAddress: string;
+  chain: Chain;
+  
+  // All events ordered by timestamp (oldest first)
+  events: TimelineEvent[];
+  
+  // Current status derived from timeline
+  currentStatus: {
+    status: SecurityStatus;
+    derivedFromEventId: string;        // ID of the event that determined current status
+    lastUpdated: string;               // When status was last evaluated
+    summary: string;                   // Human-readable current state
+  };
+  
+  // Timeline metadata
+  metadata: {
+    firstEventTimestamp?: string;      // When timeline starts
+    lastEventTimestamp: string;        // Most recent event
+    totalEvents: number;
+    hasActiveThreats: boolean;
+    hasHistoricalCompromise: boolean;
+    isFullyRecovered: boolean;
+  };
+  
+  // Analysis info
+  generatedAt: string;                 // When this timeline was generated
+  analysisVersion: string;             // Version of analysis logic
+}
+
+/**
+ * Timeline generation input - data needed to build timeline
+ */
+export interface TimelineGenerationInput {
+  walletAddress: string;
+  chain: Chain;
+  
+  // Historical data
+  transactions: Array<{
+    hash: string;
+    timestamp: string;
+    blockNumber: number;
+    from: string;
+    to: string;
+    value?: string;
+    method?: string;
+    isMalicious?: boolean;
+    maliciousType?: string;
+  }>;
+  
+  // Approvals
+  approvals: Array<{
+    txHash: string;
+    timestamp: string;
+    token: string;
+    spender: string;
+    amount: string;
+    isRevoked: boolean;
+    revokedAt?: string;
+    isMalicious: boolean;
+  }>;
+  
+  // Detected threats
+  threats: CompromiseEvidence[];
+  
+  // Drainer activity
+  drainerActivity?: {
+    firstDetected?: string;
+    lastDetected?: string;
+    drainerAddresses: string[];
+    sweepEvents: Array<{
+      timestamp: string;
+      txHash: string;
+      amount: string;
+      destination: string;
+    }>;
+  };
+  
+  // Current analysis result
+  currentAnalysis: {
+    status: SecurityStatus;
+    confidence: number;
+    hasActiveThreats: boolean;
+  };
+}
+
+/**
+ * Pre-defined timeline event templates for consistent messaging
+ */
+export const TIMELINE_EVENT_TEMPLATES: Record<TimelineEventType, {
+  titleTemplate: string;
+  severityDefault: TimelineEventSeverity;
+  isPersistent: boolean;
+  affectsStatus: boolean;
+}> = {
+  COMPROMISE_ENTRY: {
+    titleTemplate: 'Wallet Compromised',
+    severityDefault: 'CRITICAL',
+    isPersistent: true,
+    affectsStatus: true,
+  },
+  DRAIN_EVENT: {
+    titleTemplate: 'Funds Drained',
+    severityDefault: 'CRITICAL',
+    isPersistent: true,
+    affectsStatus: true,
+  },
+  APPROVAL_ABUSE: {
+    titleTemplate: 'Malicious Approval Granted',
+    severityDefault: 'CRITICAL',
+    isPersistent: true,
+    affectsStatus: true,
+  },
+  APPROVAL_REVOKED: {
+    titleTemplate: 'Approval Revoked',
+    severityDefault: 'MEDIUM',
+    isPersistent: true,
+    affectsStatus: true,
+  },
+  THREAT_CEASED: {
+    titleTemplate: 'Threat Activity Stopped',
+    severityDefault: 'HIGH',
+    isPersistent: true,
+    affectsStatus: true,
+  },
+  REMEDIATION_ACTION: {
+    titleTemplate: 'Recovery Action Taken',
+    severityDefault: 'MEDIUM',
+    isPersistent: true,
+    affectsStatus: true,
+  },
+  SAFE_STATE_CONFIRMED: {
+    titleTemplate: 'Wallet Safe',
+    severityDefault: 'SAFE',
+    isPersistent: false,
+    affectsStatus: true,
+  },
+  MONITORING_STARTED: {
+    titleTemplate: 'Analysis Started',
+    severityDefault: 'LOW',
+    isPersistent: false,
+    affectsStatus: false,
+  },
+  STATUS_CHANGE: {
+    titleTemplate: 'Status Updated',
+    severityDefault: 'LOW',
+    isPersistent: true,
+    affectsStatus: true,
+  },
+  SUSPICIOUS_ACTIVITY: {
+    titleTemplate: 'Suspicious Activity Detected',
+    severityDefault: 'MEDIUM',
+    isPersistent: true,
+    affectsStatus: false,
+  },
+  RECOVERY_COMPLETE: {
+    titleTemplate: 'Recovery Complete',
+    severityDefault: 'SAFE',
+    isPersistent: true,
+    affectsStatus: true,
+  },
+};
+
+/**
+ * Color mapping for timeline event severities
+ */
+export const TIMELINE_SEVERITY_COLORS: Record<TimelineEventSeverity, {
+  bg: string;
+  border: string;
+  text: string;
+  icon: string;
+  emoji: string;
+}> = {
+  CRITICAL: {
+    bg: 'bg-red-500/10',
+    border: 'border-red-500',
+    text: 'text-red-400',
+    icon: 'text-red-500',
+    emoji: '🟥',
+  },
+  HIGH: {
+    bg: 'bg-orange-500/10',
+    border: 'border-orange-500',
+    text: 'text-orange-400',
+    icon: 'text-orange-500',
+    emoji: '🟧',
+  },
+  MEDIUM: {
+    bg: 'bg-yellow-500/10',
+    border: 'border-yellow-500',
+    text: 'text-yellow-400',
+    icon: 'text-yellow-500',
+    emoji: '🟨',
+  },
+  LOW: {
+    bg: 'bg-blue-500/10',
+    border: 'border-blue-500',
+    text: 'text-blue-400',
+    icon: 'text-blue-500',
+    emoji: '🟦',
+  },
+  SAFE: {
+    bg: 'bg-green-500/10',
+    border: 'border-green-500',
+    text: 'text-green-400',
+    icon: 'text-green-500',
+    emoji: '🟩',
+  },
+};
 
