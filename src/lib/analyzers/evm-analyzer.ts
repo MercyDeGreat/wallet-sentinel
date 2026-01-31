@@ -2941,10 +2941,105 @@ export class EVMAnalyzer {
     value: string;
     timestamp: number;
   }[]> {
+    console.log(`[fetchPoisonedAddressTransactions] Fetching txs for ${poisonedAddress}`);
+    
+    // Try Blockscout first (more reliable, no API key needed)
+    const blockscoutResult = await this.fetchPoisonedTxsFromBlockscout(poisonedAddress);
+    if (blockscoutResult.length > 0) {
+      return blockscoutResult;
+    }
+    
+    // Fallback to Etherscan
+    return await this.fetchPoisonedTxsFromEtherscan(poisonedAddress);
+  }
+  
+  private async fetchPoisonedTxsFromBlockscout(poisonedAddress: string): Promise<{
+    hash: string;
+    from: string;
+    to: string;
+    value: string;
+    timestamp: number;
+  }[]> {
     try {
-      console.log(`[fetchPoisonedAddressTransactions] Fetching txs for ${poisonedAddress}`);
+      // Determine Blockscout URL based on chain
+      let baseUrl = '';
+      if (this.chain === 'ethereum') baseUrl = 'https://eth.blockscout.com/api/v2';
+      else if (this.chain === 'base') baseUrl = 'https://base.blockscout.com/api/v2';
+      else if (this.chain === 'bnb') baseUrl = 'https://bsc.blockscout.com/api/v2';
       
-      // Fetch transactions from Etherscan API
+      if (!baseUrl) {
+        console.log(`[fetchPoisonedTxsFromBlockscout] No Blockscout URL for chain ${this.chain}`);
+        return [];
+      }
+      
+      const url = `${baseUrl}/addresses/${poisonedAddress}/transactions`;
+      console.log(`[fetchPoisonedTxsFromBlockscout] Fetching from ${url}`);
+      
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(15000),
+        headers: { 
+          'Accept': 'application/json',
+          'User-Agent': 'Securnex/1.0'
+        }
+      });
+      
+      if (!response.ok) {
+        console.log(`[fetchPoisonedTxsFromBlockscout] HTTP ${response.status}`);
+        return [];
+      }
+      
+      const data = await response.json();
+      
+      if (!data.items || !Array.isArray(data.items)) {
+        console.log(`[fetchPoisonedTxsFromBlockscout] No items in response`);
+        return [];
+      }
+      
+      // Filter to outgoing transactions with value (where funds were forwarded)
+      const outgoingTxs = data.items
+        .filter((tx: { from: { hash?: string } | string; status: string; value: string }) => {
+          const fromAddr = typeof tx.from === 'object' ? tx.from?.hash : tx.from;
+          return fromAddr?.toLowerCase() === poisonedAddress.toLowerCase() &&
+                 tx.status === 'ok' &&
+                 tx.value && BigInt(tx.value) > BigInt(0);
+        })
+        .map((tx: { 
+          hash: string; 
+          from: { hash?: string } | string; 
+          to: { hash?: string } | string; 
+          value: string; 
+          timestamp: string 
+        }) => ({
+          hash: tx.hash,
+          from: (typeof tx.from === 'object' ? tx.from?.hash : tx.from)?.toLowerCase() || '',
+          to: (typeof tx.to === 'object' ? tx.to?.hash : tx.to)?.toLowerCase() || '',
+          value: tx.value || '0',
+          timestamp: tx.timestamp ? Math.floor(new Date(tx.timestamp).getTime() / 1000) : 0,
+        }));
+      
+      console.log(`[fetchPoisonedTxsFromBlockscout] Found ${outgoingTxs.length} outgoing transactions with value`);
+      
+      // Log the first outgoing tx for debugging
+      if (outgoingTxs.length > 0) {
+        const firstTx = outgoingTxs[0];
+        console.log(`[fetchPoisonedTxsFromBlockscout] First outgoing tx: ${firstTx.from} -> ${firstTx.to} (${firstTx.value})`);
+      }
+      
+      return outgoingTxs;
+    } catch (error) {
+      console.warn(`[fetchPoisonedTxsFromBlockscout] Error:`, error);
+      return [];
+    }
+  }
+  
+  private async fetchPoisonedTxsFromEtherscan(poisonedAddress: string): Promise<{
+    hash: string;
+    from: string;
+    to: string;
+    value: string;
+    timestamp: number;
+  }[]> {
+    try {
       const url = `${this.explorerApiUrl}?module=account&action=txlist&address=${poisonedAddress}&startblock=0&endblock=99999999&sort=asc&apikey=${this.explorerApiKey}`;
       
       const response = await fetch(url, {
@@ -2955,15 +3050,15 @@ export class EVMAnalyzer {
       const data = await response.json();
       
       if (data.status !== '1' || !Array.isArray(data.result)) {
-        console.log(`[fetchPoisonedAddressTransactions] API returned no results`);
+        console.log(`[fetchPoisonedTxsFromEtherscan] API returned no results: ${data.message}`);
         return [];
       }
       
-      // Filter to only outgoing transactions (from the poisoned address)
       const outgoingTxs = data.result
-        .filter((tx: { from: string; isError: string }) => 
+        .filter((tx: { from: string; isError: string; value: string }) => 
           tx.from?.toLowerCase() === poisonedAddress.toLowerCase() &&
-          tx.isError !== '1'
+          tx.isError !== '1' &&
+          tx.value && BigInt(tx.value) > BigInt(0)
         )
         .map((tx: { hash: string; from: string; to: string; value: string; timeStamp: string }) => ({
           hash: tx.hash,
@@ -2973,11 +3068,11 @@ export class EVMAnalyzer {
           timestamp: parseInt(tx.timeStamp) || 0,
         }));
       
-      console.log(`[fetchPoisonedAddressTransactions] Found ${outgoingTxs.length} outgoing transactions`);
+      console.log(`[fetchPoisonedTxsFromEtherscan] Found ${outgoingTxs.length} outgoing transactions`);
       
       return outgoingTxs;
     } catch (error) {
-      console.warn(`[fetchPoisonedAddressTransactions] Error fetching:`, error);
+      console.warn(`[fetchPoisonedTxsFromEtherscan] Error:`, error);
       return [];
     }
   }
