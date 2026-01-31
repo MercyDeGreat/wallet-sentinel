@@ -5,6 +5,7 @@
 
 export * from './base-provider';
 export * from './mock-providers';
+export * from './etherscan-provider';
 
 // Re-export types needed for provider implementation
 export type {

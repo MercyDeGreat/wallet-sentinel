@@ -26,6 +26,7 @@ import { SecurityExplanation, CompactExplanation } from './SecurityExplanation';
 import { EvidenceAwareExplanation, CompactEvidenceExplanation } from './EvidenceAwareExplanation';
 import { generateExplanationFromAnalysis, generateFromAnalysisResult } from '@/lib/explanation';
 import { OffChainThreatBanner, CompactOffChainBanner } from './OffChainThreatBanner';
+import { OffChainThreatsSection } from './OffChainThreatsSection';
 import type { OTTIAssessment } from '@/lib/otti/types';
 
 interface SecurityDashboardProps {
@@ -207,20 +208,19 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
         </motion.div>
       )}
 
-      {/* Off-Chain Threat Intelligence Banner */}
+      {/* Off-Chain Threat Intelligence Section */}
       {/* CRITICAL: Displayed SEPARATELY from on-chain status - never conflated */}
-      {(result.offChainIntelligence?.riskDetected && result.offChainIntelligence.fullAssessment != null) ? (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.08 }}
-        >
-          <OffChainThreatBanner 
-            assessment={result.offChainIntelligence.fullAssessment as OTTIAssessment}
-            defaultExpanded={false}
-          />
-        </motion.div>
-      ) : null}
+      {/* Uses enhanced OffChainThreatsSection with Etherscan/HashDit integration */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.08 }}
+      >
+        <OffChainThreatsSection 
+          assessment={result.offChainIntelligence?.fullAssessment as OTTIAssessment || null}
+          defaultExpanded={false}
+        />
+      </motion.div>
 
       {/* Quick Stats - 2 columns on mobile, 4 on desktop */}
       <motion.div

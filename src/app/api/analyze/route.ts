@@ -11,6 +11,7 @@ import { SolanaAnalyzer } from '@/lib/analyzers/solana-analyzer';
 import { Chain, WalletAnalysisRequest, ApiResponse, WalletAnalysisResult, SecurityStatus, OffChainThreatIntelligence } from '@/types';
 import { getMetricsTracker, SecurityVerdict } from '@/lib/metrics';
 import { getOTTIService, createMockProviders, OTTIAssessment } from '@/lib/otti';
+import { createAllEtherscanProviders } from '@/lib/otti/providers/etherscan-provider';
 
 // Map SecurityStatus to SecurityVerdict for metrics
 function mapStatusToVerdict(status: SecurityStatus): SecurityVerdict {
@@ -38,17 +39,34 @@ function mapStatusToOTTI(status: SecurityStatus): 'safe' | 'at_risk' | 'compromi
   }
 }
 
-// Initialize OTTI service with mock providers (in production, use real providers)
+// Initialize OTTI service with real + mock providers
 let ottiInitialized = false;
 function initializeOTTI() {
   if (ottiInitialized) return;
   
   try {
     const ottiService = getOTTIService();
+    
+    // 1. Register Etherscan providers (real off-chain intelligence)
+    // API keys are read from environment variables:
+    // - ETHERSCAN_API_KEY
+    // - BASESCAN_API_KEY  
+    // - BSCSCAN_API_KEY
+    const etherscanProviders = createAllEtherscanProviders({
+      ethereum: process.env.ETHERSCAN_API_KEY,
+      base: process.env.BASESCAN_API_KEY,
+      bnb: process.env.BSCSCAN_API_KEY,
+    });
+    etherscanProviders.forEach(provider => ottiService.registerProvider(provider));
+    console.log(`[OTTI] Registered ${etherscanProviders.length} Etherscan providers`);
+    
+    // 2. Register mock providers for additional threat intel (demo/fallback)
     const mockProviders = createMockProviders();
     mockProviders.forEach(provider => ottiService.registerProvider(provider));
+    console.log(`[OTTI] Registered ${mockProviders.length} mock providers`);
+    
     ottiInitialized = true;
-    console.log('[OTTI] Service initialized with mock providers');
+    console.log('[OTTI] Service initialized with Etherscan + mock providers');
   } catch (error) {
     console.warn('[OTTI] Failed to initialize:', error);
   }
