@@ -69,8 +69,6 @@ export {
 
 export {
   classifySignerCompromise,
-  buildBehaviorProfile,
-  detectBehaviorDeviation,
 } from './classifiers/signer-compromise';
 
 // Integration utilities

@@ -129,28 +129,42 @@ export function convertToClassificationApproval(
   walletAddress: string
 ): ClassificationApproval {
   // Handle TokenApproval interface (which has 'id' instead of 'hash')
-  const hash = 'id' in approval ? approval.id : (approval.hash || '');
+  const hash = 'id' in approval ? approval.id : ((approval as { hash?: string }).hash || '');
   const token = 'token' in approval && typeof approval.token === 'object' 
     ? approval.token.address 
-    : (approval.token || '');
+    : ((approval as { token?: string }).token || '');
   const tokenSymbol = 'token' in approval && typeof approval.token === 'object'
     ? approval.token.symbol
-    : (approval.tokenSymbol || 'UNKNOWN');
+    : ((approval as { tokenSymbol?: string }).tokenSymbol || 'UNKNOWN');
+  
+  // Cast to access optional properties safely
+  const approvalData = approval as {
+    spender: string;
+    owner?: string;
+    amount?: string;
+    isUnlimited?: boolean;
+    timestamp?: number;
+    blockNumber?: number;
+    wasRevoked?: boolean;
+    revokedTimestamp?: number;
+    wasUsed?: boolean;
+    usedByTransferFrom?: boolean;
+  };
   
   return {
     hash,
     token,
     tokenSymbol,
-    spender: approval.spender,
-    owner: approval.owner || walletAddress,
-    amount: approval.amount || '0',
-    isUnlimited: approval.isUnlimited || false,
-    timestamp: approval.timestamp || Math.floor(Date.now() / 1000),
-    blockNumber: approval.blockNumber || 0,
-    wasRevoked: approval.wasRevoked || false,
-    revokedTimestamp: approval.revokedTimestamp,
-    wasUsed: approval.wasUsed || false,
-    usedByTransferFrom: approval.usedByTransferFrom || false,
+    spender: approvalData.spender,
+    owner: approvalData.owner || walletAddress,
+    amount: approvalData.amount || '0',
+    isUnlimited: approvalData.isUnlimited || false,
+    timestamp: approvalData.timestamp || Math.floor(Date.now() / 1000),
+    blockNumber: approvalData.blockNumber || 0,
+    wasRevoked: approvalData.wasRevoked || false,
+    revokedTimestamp: approvalData.revokedTimestamp,
+    wasUsed: approvalData.wasUsed || false,
+    usedByTransferFrom: approvalData.usedByTransferFrom || false,
   };
 }
 
@@ -325,19 +339,27 @@ export function enrichThreatsWithClassification(
     
     // Ensure sweeper bot is correctly labeled
     if (classification.type === 'SWEEPER_BOT') {
+      const attackerAddress = enriched.attackerInfo?.address || 
+        classification.technicalDetails?.involvedAddresses?.[0] || 
+        '';
       enriched.attackerInfo = {
-        ...enriched.attackerInfo,
+        address: attackerAddress,
         type: 'SWEEPER_BOT',
         confidence: classification.confidence,
+        ...(enriched.attackerInfo || {}),
       };
     }
     
     // Ensure approval drainer is correctly labeled
     if (classification.type === 'APPROVAL_DRAINER') {
+      const attackerAddress = enriched.attackerInfo?.address || 
+        classification.technicalDetails?.involvedAddresses?.[0] || 
+        '';
       enriched.attackerInfo = {
-        ...enriched.attackerInfo,
+        address: attackerAddress,
         type: 'DRAINER',
         confidence: classification.confidence,
+        ...(enriched.attackerInfo || {}),
       };
     }
     

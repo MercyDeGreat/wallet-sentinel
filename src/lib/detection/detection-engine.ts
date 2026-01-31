@@ -28,6 +28,7 @@ import {
   SuspiciousTransaction,
   WalletAnalysisResult,
   WalletRole,
+  SecurityRecommendation,
 } from '@/types';
 import {
   isMaliciousAddress,
@@ -92,8 +93,8 @@ import {
   analyzeWithClassification,
   classifyAttackFromAnalysis,
   enrichThreatsWithClassification,
-  type AttackClassification,
 } from '../classification/integration';
+import type { AttackClassification } from '../classification/types';
 
 // ============================================
 // RISK SCORING SYSTEM
@@ -1763,20 +1764,28 @@ export async function analyzeWalletWithClassification(
   );
   
   // Build WalletAnalysisResult for classification
+  // Cast to the expected type - we only need subset of properties for classification
   const walletAnalysis = {
     address,
     chain,
+    timestamp: new Date().toISOString(),
     securityStatus: baseResult.securityStatus,
+    riskScore: baseResult.riskScore,
+    classification: 'UNKNOWN' as const,
+    riskLevel: baseResult.riskScore >= 80 ? 'CRITICAL' as const : 
+               baseResult.riskScore >= 50 ? 'HIGH' as const :
+               baseResult.riskScore >= 25 ? 'MEDIUM' as const : 'LOW' as const,
+    classificationReason: baseResult.riskReport.summary,
+    summary: baseResult.riskReport.summary,
     detectedThreats: baseResult.threats,
     approvals: baseResult.approvalAnalysis,
-    summary: baseResult.riskReport.recommendation,
-    lastUpdated: new Date().toISOString(),
-    riskScore: baseResult.riskScore,
+    suspiciousTransactions: [] as SuspiciousTransaction[],
+    recommendations: [] as SecurityRecommendation[],
   };
   
   // Run attack classification
   const { analysis, classification } = await analyzeWithClassification(
-    walletAnalysis,
+    walletAnalysis as unknown as WalletAnalysisResult,
     transactions,
     tokenTransfers || [],
     maliciousAddresses || []

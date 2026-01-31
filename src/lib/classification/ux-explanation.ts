@@ -35,7 +35,7 @@ interface AttackDisplayConfig {
   recommendedActions: string[];
 }
 
-const ATTACK_DISPLAY_CONFIG: Record<AttackType, AttackDisplayConfig> = {
+export const ATTACK_DISPLAY_CONFIG: Record<AttackType, AttackDisplayConfig> = {
   ADDRESS_POISONING: {
     emoji: '⚠️',
     headline: 'Address Poisoning Detected',

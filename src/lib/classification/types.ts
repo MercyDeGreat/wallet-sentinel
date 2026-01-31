@@ -329,20 +329,4 @@ export const ATTACK_TYPE_PRIORITY: Record<AttackType, number> = {
   'NO_COMPROMISE': 6,
 };
 
-// ============================================
-// EXPORTS
-// ============================================
-
-export type {
-  AttackType,
-  AttackClassification,
-  AttackTechnicalDetails,
-  GasPatternInfo,
-  AttackDisplayInfo,
-  ClassificationTransaction,
-  ClassificationTokenTransfer,
-  ClassificationApproval,
-  AttackClassificationInput,
-  ClassificationConfig,
-  ClassifierResult,
-};
+// Note: All types are exported inline above

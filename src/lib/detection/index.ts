@@ -155,4 +155,4 @@ export * from './three-state-classifier';
 // - Always explain uncertainty
 // - Classification ≠ Detection
 export * from '../classification';
-export type { AttackClassification } from '../classification/integration';
+export type { AttackClassification } from '../classification/types';
