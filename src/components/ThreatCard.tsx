@@ -202,8 +202,125 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
                 </div>
               </div>
 
-              {/* Related Addresses */}
-              {safeRelatedAddresses.length > 0 && (
+              {/* ADDRESS POISONING: Show Poisoned + Controller addresses distinctly */}
+              {threat.type === 'ADDRESS_POISONING' && threat.controllerDetection ? (
+                <div className="space-y-3">
+                  {/* Poisoned Address */}
+                  <div>
+                    <h4 className="text-sm font-medium mb-2 text-amber-400 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      Poisoned Address (Decoy)
+                    </h4>
+                    <div className="flex items-center gap-2 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                      <span className="font-mono text-xs text-amber-300 truncate flex-1">
+                        {threat.controllerDetection.poisonedAddress}
+                      </span>
+                      <button
+                        onClick={() => copyToClipboard(threat.controllerDetection!.poisonedAddress)}
+                        className="p-1 hover:bg-sentinel-elevated rounded transition-colors"
+                        title="Copy address"
+                      >
+                        <Copy className={`w-4 h-4 ${copiedAddress === threat.controllerDetection.poisonedAddress ? 'text-status-safe' : 'text-sentinel-muted'}`} />
+                      </button>
+                      <a
+                        href={getExplorerUrl(threat.controllerDetection.poisonedAddress)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-1 hover:bg-sentinel-elevated rounded transition-colors"
+                        title="View on explorer"
+                      >
+                        <ExternalLink className="w-4 h-4 text-sentinel-muted" />
+                      </a>
+                    </div>
+                  </div>
+
+                  {/* Controller Address */}
+                  {threat.controllerDetection.controllerAddress && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2 text-red-400 flex items-center gap-2">
+                        <Zap className="w-4 h-4" />
+                        Attacker Controller
+                        {threat.controllerDetection.priorIncidents && (
+                          <span className="text-[10px] px-1.5 py-0.5 bg-red-500/20 rounded">
+                            {threat.controllerDetection.priorIncidents} prior attacks
+                          </span>
+                        )}
+                      </h4>
+                      <div className="flex items-center gap-2 p-2 bg-red-500/10 border border-red-500/20 rounded-lg">
+                        <span className="font-mono text-xs text-red-300 truncate flex-1">
+                          {threat.controllerDetection.controllerAddress}
+                        </span>
+                        <button
+                          onClick={() => copyToClipboard(threat.controllerDetection!.controllerAddress!)}
+                          className="p-1 hover:bg-sentinel-elevated rounded transition-colors"
+                          title="Copy address"
+                        >
+                          <Copy className={`w-4 h-4 ${copiedAddress === threat.controllerDetection.controllerAddress ? 'text-status-safe' : 'text-sentinel-muted'}`} />
+                        </button>
+                        <a
+                          href={getExplorerUrl(threat.controllerDetection.controllerAddress)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-1 hover:bg-sentinel-elevated rounded transition-colors"
+                          title="View on explorer"
+                        >
+                          <ExternalLink className="w-4 h-4 text-sentinel-muted" />
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Safety message */}
+                  <div className="flex items-start gap-2 p-3 bg-green-500/5 border border-green-500/20 rounded-lg">
+                    <Shield className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" />
+                    <p className="text-xs text-green-400">
+                      <strong>No wallet compromise:</strong> This was a social engineering attack. 
+                      Your private keys and seed phrase are safe. No approvals were abused.
+                    </p>
+                  </div>
+                </div>
+              ) : threat.type === 'ADDRESS_POISONING' && safeRelatedAddresses.length > 0 ? (
+                /* ADDRESS POISONING without controller detection - show first as poisoned */
+                <div className="space-y-3">
+                  <div>
+                    <h4 className="text-sm font-medium mb-2 text-amber-400 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      Poisoned Address (Decoy)
+                    </h4>
+                    <div className="flex items-center gap-2 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                      <span className="font-mono text-xs text-amber-300 truncate flex-1">
+                        {safeRelatedAddresses[0]}
+                      </span>
+                      <button
+                        onClick={() => copyToClipboard(safeRelatedAddresses[0])}
+                        className="p-1 hover:bg-sentinel-elevated rounded transition-colors"
+                        title="Copy address"
+                      >
+                        <Copy className={`w-4 h-4 ${copiedAddress === safeRelatedAddresses[0] ? 'text-status-safe' : 'text-sentinel-muted'}`} />
+                      </button>
+                      <a
+                        href={getExplorerUrl(safeRelatedAddresses[0])}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-1 hover:bg-sentinel-elevated rounded transition-colors"
+                        title="View on explorer"
+                      >
+                        <ExternalLink className="w-4 h-4 text-sentinel-muted" />
+                      </a>
+                    </div>
+                  </div>
+
+                  {/* Safety message */}
+                  <div className="flex items-start gap-2 p-3 bg-green-500/5 border border-green-500/20 rounded-lg">
+                    <Shield className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" />
+                    <p className="text-xs text-green-400">
+                      <strong>No wallet compromise:</strong> This was a social engineering attack. 
+                      Your private keys and seed phrase are safe.
+                    </p>
+                  </div>
+                </div>
+              ) : safeRelatedAddresses.length > 0 ? (
+                /* Default Related Addresses for non-poisoning threats */
                 <div>
                   <h4 className="text-sm font-medium mb-2 text-sentinel-muted">Related Addresses</h4>
                   <div className="space-y-2">
@@ -235,7 +352,7 @@ export function ThreatCard({ threat, chain }: ThreatCardProps) {
                     ))}
                   </div>
                 </div>
-              )}
+              ) : null}
 
               {/* Related Transactions */}
               {safeRelatedTransactions.length > 0 && (
