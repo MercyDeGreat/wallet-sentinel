@@ -88,6 +88,12 @@ import {
   TransactionInput,
   EXCHANGE_HOT_WALLETS,
 } from './transaction-labeler';
+import {
+  analyzeWithClassification,
+  classifyAttackFromAnalysis,
+  enrichThreatsWithClassification,
+  type AttackClassification,
+} from '../classification/integration';
 
 // ============================================
 // RISK SCORING SYSTEM
@@ -1685,4 +1691,136 @@ function runBaseChainSweeperDetection(
   
   // Run Base sweeper detection
   return detectBaseSweeperBot(walletAddress, baseTxs);
+}
+
+// ============================================
+// ENHANCED ANALYSIS WITH ATTACK CLASSIFICATION
+// ============================================
+
+export { type AttackClassification };
+
+/**
+ * Analyze wallet with accurate attack classification.
+ * 
+ * This function runs the standard analysis pipeline and then
+ * pipes results through the AttackClassificationEngine to:
+ * 
+ * 1. Correctly distinguish between attack types:
+ *    - ADDRESS_POISONING (social engineering, not compromise)
+ *    - SWEEPER_BOT (automated drain after compromise)
+ *    - APPROVAL_DRAINER (exploits token approvals)
+ *    - SIGNER_COMPROMISE (private key leak)
+ * 
+ * 2. Prevent misclassification:
+ *    - Address poisoning is NEVER labeled as sweeper bot
+ *    - "Compromised" is NEVER shown without signer/approval evidence
+ * 
+ * 3. Generate UX-safe explanations:
+ *    - What happened
+ *    - What did NOT happen
+ *    - Confidence level
+ *    - Positive and ruled-out indicators
+ * 
+ * RULE: Classification ≠ Detection
+ */
+export async function analyzeWalletWithClassification(
+  address: string,
+  chain: Chain,
+  transactions: TransactionData[],
+  approvals: ApprovalData[],
+  tokenTransfers?: Array<{
+    hash: string;
+    from: string;
+    to: string;
+    value?: string;
+    timestamp?: number;
+    blockNumber?: number;
+    tokenAddress: string;
+    tokenSymbol?: string;
+    tokenType?: 'ERC20' | 'ERC721' | 'ERC1155';
+  }>,
+  maliciousAddresses?: string[]
+): Promise<{
+  threats: DetectedThreat[];
+  approvalAnalysis: TokenApproval[];
+  behaviorAnalysis: BehaviorAnalysisResult;
+  securityStatus: SecurityStatus;
+  riskScore: number;
+  message: AnalysisMessage;
+  excludedContracts: string[];
+  labeledTransactions: LabeledTransaction[];
+  transactionSummary: TransactionSummary;
+  riskReport: WalletRiskReport;
+  // NEW: Attack classification
+  attackClassification: AttackClassification;
+}> {
+  // Run standard analysis with labeling
+  const baseResult = await analyzeWalletWithLabeling(
+    address,
+    chain,
+    transactions,
+    approvals
+  );
+  
+  // Build WalletAnalysisResult for classification
+  const walletAnalysis = {
+    address,
+    chain,
+    securityStatus: baseResult.securityStatus,
+    detectedThreats: baseResult.threats,
+    approvals: baseResult.approvalAnalysis,
+    summary: baseResult.riskReport.recommendation,
+    lastUpdated: new Date().toISOString(),
+    riskScore: baseResult.riskScore,
+  };
+  
+  // Run attack classification
+  const { analysis, classification } = await analyzeWithClassification(
+    walletAnalysis,
+    transactions,
+    tokenTransfers || [],
+    maliciousAddresses || []
+  );
+  
+  // Update security status based on classification
+  let finalStatus = baseResult.securityStatus;
+  
+  // CRITICAL RULE: Never show "COMPROMISED" without signer or approval evidence
+  if (classification.type === 'ADDRESS_POISONING') {
+    // Address poisoning is NOT a compromise - downgrade status
+    if (finalStatus === 'COMPROMISED' || finalStatus === 'ACTIVE_COMPROMISE_DRAINER') {
+      finalStatus = 'AT_RISK';
+    }
+  }
+  
+  // Only upgrade to COMPROMISED with high-confidence classification
+  if (classification.type === 'SIGNER_COMPROMISE' && classification.confidence >= 90) {
+    finalStatus = 'COMPROMISED';
+  }
+  if (classification.type === 'APPROVAL_DRAINER' && classification.confidence >= 90) {
+    finalStatus = 'COMPROMISED';
+  }
+  if (classification.type === 'SWEEPER_BOT' && classification.confidence >= 90) {
+    finalStatus = 'ACTIVE_COMPROMISE_DRAINER';
+  }
+  
+  // Generate enhanced message based on classification
+  const enhancedMessage: AnalysisMessage = classification.type !== 'NO_COMPROMISE'
+    ? {
+        title: classification.display.headline,
+        severity: classification.type === 'ADDRESS_POISONING' ? 'WARNING' : 
+                  classification.confidence >= 90 ? 'CRITICAL' : 'WARNING',
+        message: classification.display.summary,
+        showAlert: true,
+        actionRequired: classification.type !== 'ADDRESS_POISONING',
+      }
+    : baseResult.message;
+  
+  return {
+    ...baseResult,
+    threats: analysis.detectedThreats,
+    securityStatus: finalStatus,
+    message: enhancedMessage,
+    attackClassification: classification,
+  };
 }

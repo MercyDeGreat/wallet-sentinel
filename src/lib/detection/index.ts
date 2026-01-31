@@ -122,3 +122,37 @@ export * from './base-sweeper-detector';
 // - First scan NEVER shows "ACTIVELY COMPROMISED" without live evidence
 // - Confidence < 80% → DOWNGRADE to lower severity
 export * from './three-state-classifier';
+
+// ============================================
+// ATTACK CLASSIFICATION ENGINE (2026-01)
+// ============================================
+// Modular classification engine that runs AFTER detection.
+// Accurately separates and explains attack types:
+//
+// 1. ADDRESS_POISONING - Social engineering (not a compromise)
+//    - Dust transfers from visually similar addresses
+//    - Victim sends funds manually to spoofed address
+//    - NO private key compromise, NO approvals involved
+//
+// 2. SWEEPER_BOT - Automated drain after compromise
+//    - Immediate outbound after inbound (< 60 seconds)
+//    - Multiple recipient hops or consolidation address
+//    - Machine-like gas patterns
+//
+// 3. APPROVAL_DRAINER - Exploits token approvals
+//    - Active unlimited or high-value approvals
+//    - Transfers executed via transferFrom
+//    - Drainer address matches known patterns
+//
+// 4. SIGNER_COMPROMISE - Private key leak
+//    - Direct transfers signed by wallet
+//    - No approvals involved
+//    - Behavior inconsistent with wallet history
+//
+// CRITICAL RULES:
+// - Never label address poisoning as sweeper bot
+// - Never say "wallet compromised" without signer or approval evidence
+// - Always explain uncertainty
+// - Classification ≠ Detection
+export * from '../classification';
+export type { AttackClassification } from '../classification/integration';

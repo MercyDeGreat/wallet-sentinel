@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Shield,
@@ -33,6 +33,7 @@ interface SecurityDashboardProps {
 }
 
 type Tab = 'overview' | 'timeline' | 'threats' | 'approvals' | 'recovery' | 'education';
+
 
 export function SecurityDashboard({ result }: SecurityDashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
@@ -148,7 +149,7 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
       </motion.div>
 
       {/* Solana Disclaimer - CRITICAL for user awareness */}
-      {result.chain === 'solana' && result.chainDisclaimer && (
+      {(result.chain === 'solana' && Boolean(result.chainDisclaimer)) ? (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -164,20 +165,20 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
               <p className="text-sm text-sentinel-muted">
                 {result.chainDisclaimer}
               </p>
-              {result.analysisMetadata?.limitations && result.analysisMetadata.limitations.length > 0 && (
+              {(result.analysisMetadata?.limitations?.length ?? 0) > 0 ? (
                 <ul className="mt-2 text-xs text-sentinel-muted space-y-1">
-                  {result.analysisMetadata.limitations.slice(0, 3).map((limitation, index) => (
+                  {result.analysisMetadata!.limitations!.slice(0, 3).map((limitation: string, index: number) => (
                     <li key={index} className="flex items-center gap-1.5">
                       <span className="w-1 h-1 bg-blue-400/50 rounded-full" />
                       {limitation}
                     </li>
                   ))}
                 </ul>
-              )}
+              ) : null}
             </div>
           </div>
         </motion.div>
-      )}
+      ) : null}
 
       {/* Secondary Tags - Additional context that does NOT affect risk score */}
       {result.chainAwareStatus?.secondaryTags && result.chainAwareStatus.secondaryTags.length > 0 && (
@@ -208,7 +209,7 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
 
       {/* Off-Chain Threat Intelligence Banner */}
       {/* CRITICAL: Displayed SEPARATELY from on-chain status - never conflated */}
-      {result.offChainIntelligence?.riskDetected && result.offChainIntelligence.fullAssessment && (
+      {(result.offChainIntelligence?.riskDetected && result.offChainIntelligence.fullAssessment != null) ? (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -219,7 +220,7 @@ export function SecurityDashboard({ result }: SecurityDashboardProps) {
             defaultExpanded={false}
           />
         </motion.div>
-      )}
+      ) : null}
 
       {/* Quick Stats - 2 columns on mobile, 4 on desktop */}
       <motion.div
