@@ -179,6 +179,124 @@ function detectConsolidationPattern(
 }
 
 // ============================================
+// NEGATIVE CONSTRAINT HELPERS
+// ============================================
+
+import { calculateAddressSimilarity } from './address-poisoning';
+
+/**
+ * Check if any addresses show visual similarity (poisoning indicator)
+ */
+function checkForAddressSimilarity(
+  tokenTransfers: ClassificationTokenTransfer[],
+  transactions: ClassificationTransaction[],
+  threshold: number
+): { hasSimilarity: boolean; details: string } {
+  const inboundDust = tokenTransfers.filter(t => t.isInbound && t.isDust);
+  const outbound = [...transactions.filter(t => !t.isInbound), ...tokenTransfers.filter(t => !t.isInbound)];
+  
+  for (const dust of inboundDust) {
+    for (const out of outbound) {
+      const similarity = calculateAddressSimilarity(dust.from, out.to);
+      if (similarity.prefixMatch + similarity.suffixMatch >= threshold) {
+        return {
+          hasSimilarity: true,
+          details: `Address ${dust.from.slice(0, 8)}... similar to ${out.to.slice(0, 8)}... (${similarity.prefixMatch + similarity.suffixMatch} chars match)`,
+        };
+      }
+    }
+  }
+  
+  return { hasSimilarity: false, details: '' };
+}
+
+/**
+ * Check if wallet has dusting history (poisoning indicator)
+ */
+function checkDustingHistory(
+  tokenTransfers: ClassificationTokenTransfer[],
+  minDustTransfers: number
+): { hasDusting: boolean; count: number; durationDays: number } {
+  const inboundDust = tokenTransfers.filter(t => t.isInbound && t.isDust);
+  
+  if (inboundDust.length < minDustTransfers) {
+    return { hasDusting: false, count: inboundDust.length, durationDays: 0 };
+  }
+  
+  // Calculate duration
+  const timestamps = inboundDust.map(t => t.timestamp).sort((a, b) => a - b);
+  const durationSeconds = timestamps[timestamps.length - 1] - timestamps[0];
+  const durationDays = durationSeconds / 86400;
+  
+  return {
+    hasDusting: true,
+    count: inboundDust.length,
+    durationDays,
+  };
+}
+
+/**
+ * Check if outbound transfer appears to be user-signed (not automated)
+ * User-signed = long time gap, single recipient, not part of automated pattern
+ */
+function isUserSignedTransfer(
+  inboundTimestamp: number,
+  outboundTimestamp: number,
+  sweeperThreshold: number
+): { isUserSigned: boolean; timeDelta: number } {
+  const timeDelta = outboundTimestamp - inboundTimestamp;
+  
+  // If time gap is > sweeper threshold, it's likely user-initiated
+  // Sweeper bots act within seconds, not hours/days
+  const isUserSigned = timeDelta > sweeperThreshold;
+  
+  return { isUserSigned, timeDelta };
+}
+
+/**
+ * Count unique outbound recipients
+ */
+function countUniqueRecipients(
+  transactions: ClassificationTransaction[],
+  tokenTransfers: ClassificationTokenTransfer[]
+): number {
+  const recipients = new Set<string>();
+  
+  for (const tx of transactions) {
+    if (!tx.isInbound && tx.to) {
+      recipients.add(tx.to.toLowerCase());
+    }
+  }
+  
+  for (const transfer of tokenTransfers) {
+    if (!transfer.isInbound && transfer.to) {
+      recipients.add(transfer.to.toLowerCase());
+    }
+  }
+  
+  return recipients.size;
+}
+
+// ============================================
+// CLASSIFICATION DEBUG TRACE
+// ============================================
+
+export interface SweeperBotDecisionTrace {
+  /** Reasons sweeper bot was disqualified */
+  rejectedBecause: string[];
+  /** Reasons sweeper bot passed checks (if detected) */
+  acceptedBecause: string[];
+  /** All negative constraints checked */
+  negativeConstraints: {
+    hasAddressSimilarity: boolean;
+    hasDustingHistory: boolean;
+    isUserSignedTransfer: boolean;
+    timeDeltaExceedsThreshold: boolean;
+    singleRecipient: boolean;
+  };
+}
+
+// ============================================
 // MAIN CLASSIFIER
 // ============================================
 
@@ -190,16 +308,21 @@ function detectConsolidationPattern(
  * 2. Multiple recipient hops or consolidation address
  * 3. Known sweeper gas patterns OR consistent automation
  * 
- * EXCLUSION CONDITIONS:
- * - No dusting similarity behavior (that's address poisoning)
- * - Not just a single fast transfer (must be pattern)
+ * EXCLUSION CONDITIONS (ANY disqualifies SWEEPER_BOT):
+ * - hasAddressSimilarity === true (address poisoning pattern)
+ * - hasDustingHistory === true (address poisoning pattern)
+ * - outboundTx.isUserSigned === true (manual transfer)
+ * - timeDeltaInboundToOutbound > SWEEPER_THRESHOLD
+ * - recipientCount === 1 (single destination, not consolidation pattern)
+ * 
+ * HARD RULE: If ANY exclusion condition is met → SWEEPER_BOT MUST BE DISQUALIFIED
  */
 export function classifySweeperBot(
   walletAddress: string,
   transactions: ClassificationTransaction[],
   tokenTransfers: ClassificationTokenTransfer[],
   config: ClassificationConfig
-): ClassifierResult {
+): ClassifierResult & { decisionTrace?: SweeperBotDecisionTrace } {
   const positiveIndicators: string[] = [];
   const ruledOutIndicators: string[] = [];
   const evidence: { transactionHashes: string[]; addresses: string[]; timestamps: number[] } = {
@@ -208,8 +331,95 @@ export function classifySweeperBot(
     timestamps: [],
   };
   
+  // Initialize decision trace for debugging
+  const decisionTrace: SweeperBotDecisionTrace = {
+    rejectedBecause: [],
+    acceptedBecause: [],
+    negativeConstraints: {
+      hasAddressSimilarity: false,
+      hasDustingHistory: false,
+      isUserSignedTransfer: false,
+      timeDeltaExceedsThreshold: false,
+      singleRecipient: false,
+    },
+  };
+  
   // ============================================
-  // EXCLUSION CHECK: Address Poisoning Pattern
+  // NEGATIVE CONSTRAINTS CHECK (MUST BE FIRST)
+  // ============================================
+  // If ANY of these are true, SWEEPER_BOT is DISQUALIFIED
+  
+  // Constraint 1: Check for address similarity (poisoning pattern)
+  const similarityCheck = checkForAddressSimilarity(
+    tokenTransfers,
+    transactions,
+    config.addressSimilarityThreshold
+  );
+  decisionTrace.negativeConstraints.hasAddressSimilarity = similarityCheck.hasSimilarity;
+  
+  if (similarityCheck.hasSimilarity) {
+    decisionTrace.rejectedBecause.push(`Address similarity detected: ${similarityCheck.details}`);
+    ruledOutIndicators.push('DISQUALIFIED: Address similarity pattern detected (ADDRESS_POISONING)');
+    return {
+      detected: false,
+      confidence: 0,
+      positiveIndicators: [],
+      ruledOutIndicators,
+      evidence,
+      reasoning: 'SWEEPER_BOT disqualified: Address similarity detected. This is an ADDRESS_POISONING pattern.',
+      decisionTrace,
+    };
+  }
+  
+  // Constraint 2: Check for dusting history (poisoning pattern)
+  const dustingCheck = checkDustingHistory(tokenTransfers, config.minDustTransfersForPoisoning);
+  decisionTrace.negativeConstraints.hasDustingHistory = dustingCheck.hasDusting;
+  
+  if (dustingCheck.hasDusting) {
+    decisionTrace.rejectedBecause.push(
+      `Dusting history detected: ${dustingCheck.count} dust transfers over ${dustingCheck.durationDays.toFixed(1)} days`
+    );
+    ruledOutIndicators.push('DISQUALIFIED: Dusting history detected (ADDRESS_POISONING)');
+    return {
+      detected: false,
+      confidence: 0,
+      positiveIndicators: [],
+      ruledOutIndicators,
+      evidence,
+      reasoning: 'SWEEPER_BOT disqualified: Dusting history detected. This is an ADDRESS_POISONING pattern.',
+      decisionTrace,
+    };
+  }
+  
+  // Constraint 3: Count unique recipients
+  const recipientCount = countUniqueRecipients(transactions, tokenTransfers);
+  decisionTrace.negativeConstraints.singleRecipient = recipientCount === 1;
+  
+  // Single recipient with non-dust transfers is NOT sweeper bot pattern
+  // (Sweeper bots typically consolidate to known addresses in patterns)
+  if (recipientCount === 1) {
+    const outbound = [...transactions.filter(t => !t.isInbound), ...tokenTransfers.filter(t => !t.isInbound)];
+    const hasSignificantOutbound = outbound.some(t => 
+      BigInt(t.value || '0') > BigInt(config.dustValueThreshold)
+    );
+    
+    if (hasSignificantOutbound && outbound.length === 1) {
+      decisionTrace.rejectedBecause.push('Single recipient with single significant outbound - likely manual transfer');
+      ruledOutIndicators.push('DISQUALIFIED: Single outbound to single recipient (likely user-initiated)');
+      return {
+        detected: false,
+        confidence: 0,
+        positiveIndicators: [],
+        ruledOutIndicators,
+        evidence,
+        reasoning: 'SWEEPER_BOT disqualified: Single outbound transfer to single recipient suggests user-initiated transaction, not automated sweeper.',
+        decisionTrace,
+      };
+    }
+  }
+  
+  // ============================================
+  // LEGACY EXCLUSION CHECK: Address Poisoning Pattern
   // ============================================
   
   // If we see dust transfers from similar addresses, this is NOT sweeper bot
@@ -222,6 +432,7 @@ export function classifySweeperBot(
     ];
     
     if (nonDustOutbound.length === 0) {
+      decisionTrace.rejectedBecause.push('Only dust transfers detected - address poisoning pattern');
       ruledOutIndicators.push('Only dust transfers detected - address poisoning pattern, not sweeper');
       return {
         detected: false,
@@ -230,6 +441,7 @@ export function classifySweeperBot(
         ruledOutIndicators,
         evidence,
         reasoning: 'Dust-only transfers detected. This pattern indicates address poisoning, not sweeper bot.',
+        decisionTrace,
       };
     }
   }
@@ -245,6 +457,7 @@ export function classifySweeperBot(
   );
   
   if (sweepEvents.length === 0) {
+    decisionTrace.rejectedBecause.push('No immediate outbound after inbound detected');
     return {
       detected: false,
       confidence: 0,
@@ -252,6 +465,61 @@ export function classifySweeperBot(
       ruledOutIndicators: ['No immediate outbound after inbound detected'],
       evidence,
       reasoning: 'No sweep pattern detected. Sweeper bots immediately transfer out funds after receipt.',
+      decisionTrace,
+    };
+  }
+  
+  // ============================================
+  // Constraint 4: Check if transfers are user-signed (time delta check)
+  // ============================================
+  
+  // Check if ALL outbound transfers have time deltas > threshold
+  // If ANY significant outbound happens long after inbound, it's user-initiated
+  const allInbound = [...transactions.filter(t => t.isInbound), ...tokenTransfers.filter(t => t.isInbound)];
+  const allOutbound = [...transactions.filter(t => !t.isInbound), ...tokenTransfers.filter(t => !t.isInbound)];
+  
+  let hasSlowTransfer = false;
+  let maxTimeDelta = 0;
+  
+  for (const outbound of allOutbound) {
+    // Find the most recent inbound before this outbound
+    const priorInbound = allInbound
+      .filter(i => i.timestamp <= outbound.timestamp)
+      .sort((a, b) => b.timestamp - a.timestamp)[0];
+    
+    if (priorInbound) {
+      const userSignedCheck = isUserSignedTransfer(
+        priorInbound.timestamp,
+        outbound.timestamp,
+        config.sweeperTimeDeltaSeconds
+      );
+      
+      if (userSignedCheck.timeDelta > maxTimeDelta) {
+        maxTimeDelta = userSignedCheck.timeDelta;
+      }
+      
+      if (userSignedCheck.isUserSigned) {
+        hasSlowTransfer = true;
+        decisionTrace.negativeConstraints.isUserSignedTransfer = true;
+        decisionTrace.negativeConstraints.timeDeltaExceedsThreshold = true;
+      }
+    }
+  }
+  
+  // If the primary large outbound is user-signed (slow), disqualify
+  if (hasSlowTransfer && sweepEvents.length <= 1) {
+    decisionTrace.rejectedBecause.push(
+      `Outbound transfer time delta (${maxTimeDelta}s) exceeds sweeper threshold (${config.sweeperTimeDeltaSeconds}s)`
+    );
+    ruledOutIndicators.push(`DISQUALIFIED: Time delta ${maxTimeDelta}s > ${config.sweeperTimeDeltaSeconds}s (user-initiated)`);
+    return {
+      detected: false,
+      confidence: 0,
+      positiveIndicators: [],
+      ruledOutIndicators,
+      evidence,
+      reasoning: `SWEEPER_BOT disqualified: Outbound occurred ${maxTimeDelta} seconds after inbound, exceeding the ${config.sweeperTimeDeltaSeconds}s threshold for automated sweeping.`,
+      decisionTrace,
     };
   }
   
@@ -361,11 +629,62 @@ export function classifySweeperBot(
   // SWEEPER_BOT requires:
   // - At least 2 sweep events (repeated pattern)
   // - OR 1 sweep event + consolidation + automated gas
-  const detected = hasRepeatedPattern || 
-                   (sweepEvents.length >= 1 && consolidation.isConsolidation && gasPatterns.isAutomated);
+  let detected = hasRepeatedPattern || 
+                 (sweepEvents.length >= 1 && consolidation.isConsolidation && gasPatterns.isAutomated);
   
   // ============================================
-  // STEP 7: Add ruled-out indicators
+  // STEP 7: REGRESSION GUARD (HARD RULE)
+  // ============================================
+  // If classification === SWEEPER_BOT, these assertions MUST pass:
+  // - noAddressSimilarity
+  // - noDustingHistory
+  // - isAutomatedDrain
+  // If any assertion fails → fallback to false
+  
+  if (detected) {
+    // Re-verify all negative constraints
+    const finalSimilarityCheck = checkForAddressSimilarity(
+      tokenTransfers,
+      transactions,
+      config.addressSimilarityThreshold
+    );
+    
+    const finalDustingCheck = checkDustingHistory(
+      tokenTransfers,
+      config.minDustTransfersForPoisoning
+    );
+    
+    // HARD RULE: Fail if any poisoning signal exists
+    if (finalSimilarityCheck.hasSimilarity) {
+      detected = false;
+      decisionTrace.rejectedBecause.push('REGRESSION_GUARD: Address similarity still detected');
+      ruledOutIndicators.push('REGRESSION_GUARD: Address similarity detected - cannot be SWEEPER_BOT');
+    }
+    
+    if (finalDustingCheck.hasDusting) {
+      detected = false;
+      decisionTrace.rejectedBecause.push('REGRESSION_GUARD: Dusting history still detected');
+      ruledOutIndicators.push('REGRESSION_GUARD: Dusting history detected - cannot be SWEEPER_BOT');
+    }
+    
+    // Must have automated pattern for sweeper bot
+    if (!gasPatterns.isAutomated && !hasRepeatedPattern) {
+      detected = false;
+      decisionTrace.rejectedBecause.push('REGRESSION_GUARD: No automated drain pattern confirmed');
+      ruledOutIndicators.push('REGRESSION_GUARD: No automated pattern - likely not SWEEPER_BOT');
+    }
+    
+    if (detected) {
+      decisionTrace.acceptedBecause.push(
+        'Passed all negative constraints',
+        'Automated sweep pattern confirmed',
+        `${sweepEvents.length} sweep events with ${avgTimeDelta.toFixed(1)}s avg response`
+      );
+    }
+  }
+  
+  // ============================================
+  // STEP 8: Add ruled-out indicators
   // ============================================
   
   ruledOutIndicators.push(
@@ -375,8 +694,8 @@ export function classifySweeperBot(
   
   return {
     detected,
-    confidence,
-    positiveIndicators,
+    confidence: detected ? confidence : 0, // Zero confidence if not detected
+    positiveIndicators: detected ? positiveIndicators : [],
     ruledOutIndicators,
     evidence,
     reasoning: detected
@@ -384,7 +703,8 @@ export function classifySweeperBot(
         `${avgTimeDelta.toFixed(1)}s average response time. ` +
         (consolidation.isConsolidation ? 'Funds consolidate to few addresses. ' : '') +
         (gasPatterns.isAutomated ? 'Automated gas patterns confirm bot behavior.' : '')
-      : 'Sweeper bot not confirmed. Some sweep events detected but pattern incomplete.',
+      : 'Sweeper bot not confirmed. Pattern does not match automated sweeper behavior.',
+    decisionTrace,
   };
 }
 

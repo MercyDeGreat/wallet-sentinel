@@ -35,6 +35,23 @@ import type {
   ATTACK_TYPE_PRIORITY,
 } from './types';
 
+// ============================================
+// CLASSIFICATION DECISION TRACE
+// ============================================
+// Internal-only debugging structure to trace classification decisions.
+// Required to prevent regressions and debug misclassifications.
+
+export interface ClassificationDecisionTrace {
+  /** Reasons sweeper bot was rejected/disqualified */
+  sweeperBotRejectedBecause: string[];
+  
+  /** Reasons address poisoning was accepted */
+  addressPoisoningAcceptedBecause: string[];
+  
+  /** Steps in priority resolution */
+  priorityResolution: string[];
+}
+
 import { classifyAddressPoisoning } from './classifiers/address-poisoning';
 import { classifySweeperBot } from './classifiers/sweeper-bot';
 import { classifyApprovalDrainer } from './classifiers/approval-drainer';
@@ -191,6 +208,10 @@ export class AttackClassificationEngine {
   /**
    * Resolve conflicts between multiple detected attack types.
    * Uses priority order and confidence scores.
+   * 
+   * PRIORITY RULE (HARD):
+   * If ADDRESS_POISONING is detected → it takes precedence over SWEEPER_BOT
+   * Address poisoning runs BEFORE sweeper bot evaluation.
    */
   private resolveAttackType(
     classifierResults: Map<AttackType, ClassifierResult>
@@ -199,7 +220,15 @@ export class AttackClassificationEngine {
     winningResult: ClassifierResult | null;
     allPositiveIndicators: string[];
     allRuledOutIndicators: string[];
+    decisionTrace?: ClassificationDecisionTrace;
   } {
+    // Initialize decision trace
+    const decisionTrace: ClassificationDecisionTrace = {
+      sweeperBotRejectedBecause: [],
+      addressPoisoningAcceptedBecause: [],
+      priorityResolution: [],
+    };
+    
     // Collect all positive and ruled out indicators
     const allPositiveIndicators: string[] = [];
     const allRuledOutIndicators: string[] = [];
@@ -209,10 +238,51 @@ export class AttackClassificationEngine {
       allRuledOutIndicators.push(...result.ruledOutIndicators);
     }
     
-    // Find all detected attack types
+    // ============================================
+    // PRIORITY CHECK: ADDRESS_POISONING FIRST
+    // ============================================
+    // This runs BEFORE any other evaluation.
+    // If address poisoning is detected, it takes absolute priority
+    // over sweeper bot classification.
+    
+    const poisoningResult = classifierResults.get('ADDRESS_POISONING');
+    const sweeperResult = classifierResults.get('SWEEPER_BOT');
+    
+    if (poisoningResult?.detected && poisoningResult.confidence >= 40) {
+      decisionTrace.priorityResolution.push('ADDRESS_POISONING detected - checking priority rule');
+      decisionTrace.addressPoisoningAcceptedBecause.push(
+        ...poisoningResult.positiveIndicators
+      );
+      
+      // HARD RULE: If poisoning detected, sweeper bot is AUTOMATICALLY rejected
+      if (sweeperResult?.detected) {
+        decisionTrace.sweeperBotRejectedBecause.push(
+          'ADDRESS_POISONING takes precedence',
+          'Mutual exclusion: dust + similarity = poisoning, not sweeper',
+          ...sweeperResult.ruledOutIndicators
+        );
+        decisionTrace.priorityResolution.push(
+          'SWEEPER_BOT rejected due to ADDRESS_POISONING priority'
+        );
+      }
+      
+      // Return ADDRESS_POISONING immediately
+      return {
+        attackType: 'ADDRESS_POISONING',
+        winningResult: poisoningResult,
+        allPositiveIndicators,
+        allRuledOutIndicators,
+        decisionTrace,
+      };
+    }
+    
+    // Find all detected attack types (excluding poisoning which was handled above)
     const detectedTypes: { type: AttackType; result: ClassifierResult }[] = [];
     
     for (const [type, result] of classifierResults) {
+      // Skip poisoning as it was already checked with priority
+      if (type === 'ADDRESS_POISONING') continue;
+      
       if (result.detected && result.confidence >= 40) { // Minimum confidence threshold
         detectedTypes.push({ type, result });
       }
@@ -220,62 +290,42 @@ export class AttackClassificationEngine {
     
     // If no attacks detected, return NO_COMPROMISE
     if (detectedTypes.length === 0) {
+      decisionTrace.priorityResolution.push('No attack types detected after priority check');
       return {
         attackType: 'NO_COMPROMISE',
         winningResult: null,
         allPositiveIndicators,
         allRuledOutIndicators,
+        decisionTrace,
       };
     }
     
     // If only one attack type detected, use it
     if (detectedTypes.length === 1) {
+      decisionTrace.priorityResolution.push(`Single attack type: ${detectedTypes[0].type}`);
       return {
         attackType: detectedTypes[0].type,
         winningResult: detectedTypes[0].result,
         allPositiveIndicators,
         allRuledOutIndicators,
+        decisionTrace,
       };
     }
     
     // Multiple attack types detected - resolve conflict
     // ============================================
     // CONFLICT RESOLUTION RULES:
-    // 1. If ADDRESS_POISONING is detected, it CANNOT be SWEEPER_BOT
-    //    (These are mutually exclusive patterns)
-    // 2. SIGNER_COMPROMISE takes priority over others
-    // 3. Higher confidence wins when priority is equal
+    // 1. ADDRESS_POISONING was already handled above (takes priority)
+    // 2. SIGNER_COMPROMISE takes priority over APPROVAL_DRAINER
+    // 3. APPROVAL_DRAINER takes priority over SWEEPER_BOT
+    // 4. Higher confidence wins when priority is equal
     // ============================================
     
-    // HARD RULE: Address poisoning excludes sweeper bot
-    const hasPoisoning = detectedTypes.some(d => d.type === 'ADDRESS_POISONING');
-    const hasSweeper = detectedTypes.some(d => d.type === 'SWEEPER_BOT');
+    decisionTrace.priorityResolution.push(
+      `Multiple attack types detected: ${detectedTypes.map(d => d.type).join(', ')}`
+    );
     
-    if (hasPoisoning && hasSweeper) {
-      // Compare confidence - but poisoning pattern should win unless
-      // sweeper has MUCH higher confidence (>20% difference)
-      const poisoningConf = detectedTypes.find(d => d.type === 'ADDRESS_POISONING')!.result.confidence;
-      const sweeperConf = detectedTypes.find(d => d.type === 'SWEEPER_BOT')!.result.confidence;
-      
-      if (sweeperConf > poisoningConf + 20) {
-        // Sweeper has significantly higher confidence
-        // But we should still verify it's not actually poisoning
-        console.warn(
-          `[AttackClassificationEngine] Conflict: Both ADDRESS_POISONING (${poisoningConf}%) and ` +
-          `SWEEPER_BOT (${sweeperConf}%) detected. Sweeper has higher confidence but poisoning ` +
-          `patterns should be verified.`
-        );
-      }
-      
-      // Default to poisoning if pattern exists - it's more specific
-      // Filter out sweeper from candidates
-      const filteredTypes = detectedTypes.filter(d => d.type !== 'SWEEPER_BOT');
-      if (filteredTypes.length > 0) {
-        return this.selectWinner(filteredTypes, allPositiveIndicators, allRuledOutIndicators);
-      }
-    }
-    
-    return this.selectWinner(detectedTypes, allPositiveIndicators, allRuledOutIndicators);
+    return this.selectWinner(detectedTypes, allPositiveIndicators, allRuledOutIndicators, decisionTrace);
   }
   
   /**
@@ -284,19 +334,23 @@ export class AttackClassificationEngine {
   private selectWinner(
     candidates: { type: AttackType; result: ClassifierResult }[],
     allPositiveIndicators: string[],
-    allRuledOutIndicators: string[]
+    allRuledOutIndicators: string[],
+    decisionTrace?: ClassificationDecisionTrace
   ): {
     attackType: AttackType;
     winningResult: ClassifierResult | null;
     allPositiveIndicators: string[];
     allRuledOutIndicators: string[];
+    decisionTrace?: ClassificationDecisionTrace;
   } {
     // Sort by priority (lower = higher priority), then by confidence
+    // NOTE: ADDRESS_POISONING is handled separately in resolveAttackType
+    //       and should NEVER reach here in conflict with SWEEPER_BOT
     const priorityMap: Record<AttackType, number> = {
       'SIGNER_COMPROMISE': 1,
       'APPROVAL_DRAINER': 2,
       'SWEEPER_BOT': 3,
-      'ADDRESS_POISONING': 4,
+      'ADDRESS_POISONING': 4, // Should not conflict here - handled earlier
       'SUSPICIOUS_ACTIVITY': 5,
       'NO_COMPROMISE': 6,
     };
@@ -318,6 +372,11 @@ export class AttackClassificationEngine {
       
       // If top two are within 15% confidence and different priority levels
       if (confDiff <= 15 && priorityMap[topTwo[0].type] !== priorityMap[topTwo[1].type]) {
+        decisionTrace?.priorityResolution.push(
+          `Ambiguous: ${topTwo[0].type} (${topTwo[0].result.confidence}%) vs ` +
+          `${topTwo[1].type} (${topTwo[1].result.confidence}%) - returning SUSPICIOUS_ACTIVITY`
+        );
+        
         // Ambiguous - return SUSPICIOUS_ACTIVITY with merged indicators
         return {
           attackType: 'SUSPICIOUS_ACTIVITY',
@@ -348,15 +407,19 @@ export class AttackClassificationEngine {
           },
           allPositiveIndicators,
           allRuledOutIndicators,
+          decisionTrace,
         };
       }
     }
+    
+    decisionTrace?.priorityResolution.push(`Winner: ${sorted[0].type} (${sorted[0].result.confidence}%)`);
     
     return {
       attackType: sorted[0].type,
       winningResult: sorted[0].result,
       allPositiveIndicators,
       allRuledOutIndicators,
+      decisionTrace,
     };
   }
   
