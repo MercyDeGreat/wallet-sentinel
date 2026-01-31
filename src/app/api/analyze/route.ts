@@ -12,6 +12,7 @@ import { Chain, WalletAnalysisRequest, ApiResponse, WalletAnalysisResult, Securi
 import { getMetricsTracker, SecurityVerdict } from '@/lib/metrics';
 import { getOTTIService, createMockProviders, OTTIAssessment } from '@/lib/otti';
 import { createAllEtherscanProviders } from '@/lib/otti/providers/etherscan-provider';
+import { createHashDitProvider } from '@/lib/otti/providers/hashdit-provider';
 
 // Map SecurityStatus to SecurityVerdict for metrics
 function mapStatusToVerdict(status: SecurityStatus): SecurityVerdict {
@@ -47,7 +48,16 @@ function initializeOTTI() {
   try {
     const ottiService = getOTTIService();
     
-    // 1. Register Etherscan providers (real off-chain intelligence)
+    // 1. Register HashDit provider FIRST (highest priority - authoritative source)
+    // This includes known reported addresses from Etherscan HashDit warnings
+    const hashditProvider = createHashDitProvider({
+      chain: 'ethereum',
+      apiKey: process.env.HASHDIT_API_KEY,
+    });
+    ottiService.registerProvider(hashditProvider);
+    console.log('[OTTI] Registered HashDit provider (includes known Etherscan reports)');
+    
+    // 2. Register Etherscan providers (real off-chain intelligence)
     // API keys are read from environment variables:
     // - ETHERSCAN_API_KEY
     // - BASESCAN_API_KEY  
@@ -60,13 +70,13 @@ function initializeOTTI() {
     etherscanProviders.forEach(provider => ottiService.registerProvider(provider));
     console.log(`[OTTI] Registered ${etherscanProviders.length} Etherscan providers`);
     
-    // 2. Register mock providers for additional threat intel (demo/fallback)
+    // 3. Register mock providers for additional threat intel (demo/fallback)
     const mockProviders = createMockProviders();
     mockProviders.forEach(provider => ottiService.registerProvider(provider));
     console.log(`[OTTI] Registered ${mockProviders.length} mock providers`);
     
     ottiInitialized = true;
-    console.log('[OTTI] Service initialized with Etherscan + mock providers');
+    console.log('[OTTI] Service initialized with HashDit + Etherscan + mock providers');
   } catch (error) {
     console.warn('[OTTI] Failed to initialize:', error);
   }
