@@ -103,6 +103,13 @@ import {
   isDustValue,
   classifyAddressPoisoning,
 } from '../classification/classifiers/address-poisoning';
+import {
+  ControllerDetectionEngine,
+  createControllerDetectionEngine,
+  generateControllerAlertMessage,
+  type FlowTrace,
+  type ControllerCandidate,
+} from '../detection/controller-detection';
 
 // ============================================
 // INTERFACES
@@ -327,7 +334,8 @@ export class EVMAnalyzer {
 
     // 5. DETECT ADDRESS POISONING (Social Engineering Attack)
     // This MUST run after sweeper bot detection to properly classify
-    const addressPoisoningThreat = this.detectAddressPoisoning(transactions, tokenTransfers, normalizedAddress);
+    // Also traces fund flow to detect controller wallets
+    const addressPoisoningThreat = await this.detectAddressPoisoning(transactions, tokenTransfers, normalizedAddress);
     if (addressPoisoningThreat) threats.push(addressPoisoningThreat);
     }
 
@@ -4029,11 +4037,11 @@ export class EVMAnalyzer {
   // The wallet doesn't need to be abandoned or keys rotated.
   // ============================================
 
-  private detectAddressPoisoning(
+  private async detectAddressPoisoning(
     transactions: TransactionData[],
     tokenTransfers: TokenTransfer[],
     userAddress: string
-  ): DetectedThreat | null {
+  ): Promise<DetectedThreat | null> {
     // Use the shared poisoning pattern check
     const poisoningCheck = this.checkAddressPoisoningPatterns(transactions, tokenTransfers, userAddress);
     
@@ -4079,25 +4087,111 @@ export class EVMAnalyzer {
     console.log(`[detectAddressPoisoning] Indicators: ${indicators.join(', ')}`);
     
     // ============================================
+    // CONTROLLER DETECTION: Trace fund flow
+    // ============================================
+    // After detecting address poisoning, trace where the funds went
+    // to identify the CONTROLLER wallet (attacker's operational wallet)
+    
+    let controllerInfo: {
+      controllerAddress?: string;
+      flowTrace?: FlowTrace;
+      priorIncidents?: number;
+    } = {};
+    
+    // Find if victim sent to a poisoned address
+    const sentToPoisonedTx = transactions.find(tx => 
+      tx.from?.toLowerCase() === userAddress.toLowerCase() &&
+      poisoningCheck.similarAddresses.includes(tx.to?.toLowerCase() || '')
+    );
+    
+    if (sentToPoisonedTx && poisoningCheck.similarAddresses.length > 0) {
+      try {
+        // Create controller detection engine
+        const controllerEngine = createControllerDetectionEngine({
+          maxHops: 3,
+          rapidForwardingThresholdSeconds: 60,
+          highForwardingRatioThreshold: 0.9,
+        });
+        
+        // Convert transactions to format expected by controller engine
+        const txsForTracing = transactions.map(tx => ({
+          hash: tx.hash,
+          from: tx.from?.toLowerCase() || '',
+          to: tx.to?.toLowerCase() || '',
+          value: tx.value || '0',
+          timestamp: tx.timestamp,
+        }));
+        
+        // Trace the flow from poisoned address
+        const flowTrace = await controllerEngine.traceAndDetectControllers(
+          poisoningCheck.similarAddresses[0], // poisoned address
+          userAddress,
+          sentToPoisonedTx.hash,
+          sentToPoisonedTx.value || '0',
+          txsForTracing
+        );
+        
+        controllerInfo.flowTrace = flowTrace;
+        
+        if (flowTrace.primaryController) {
+          controllerInfo.controllerAddress = flowTrace.primaryController.address;
+          controllerInfo.priorIncidents = flowTrace.primaryController.fingerprint?.incidentCount;
+          
+          console.log(`[detectAddressPoisoning] Controller detected: ${controllerInfo.controllerAddress}`);
+          indicators.push(`Controller wallet identified: ${controllerInfo.controllerAddress.slice(0, 10)}...`);
+          
+          if (controllerInfo.priorIncidents) {
+            indicators.push(`Controller involved in ${controllerInfo.priorIncidents} prior attacks`);
+          }
+        }
+      } catch (error) {
+        console.warn(`[detectAddressPoisoning] Controller detection failed:`, error);
+      }
+    }
+    
+    // ============================================
     // GENERATE THE ADDRESS POISONING THREAT
     // ============================================
     // This is the correct classification for this attack type.
     // NEVER show: "ACTIVELY COMPROMISED", "Sweeper bot", "Private key leaked"
     // ALWAYS show: Reassuring but accurate messaging
     
+    // Build description with controller info
+    let description = 'No wallet compromise detected. Funds were sent to a look-alike address that previously dusted this wallet.';
+    if (controllerInfo.controllerAddress) {
+      description += ` The poisoned address forwarded funds to a controller wallet.`;
+    }
+    
+    // Build technical details
+    let technicalDetails = `Indicators:\n${indicators.map(i => `• ${i}`).join('\n')}`;
+    
+    if (controllerInfo.controllerAddress) {
+      technicalDetails += `\n\nAttack Flow:`;
+      technicalDetails += `\n• Poisoned address: ${poisoningCheck.similarAddresses[0]}`;
+      technicalDetails += `\n• Controller wallet: ${controllerInfo.controllerAddress}`;
+      if (controllerInfo.priorIncidents) {
+        technicalDetails += ` (${controllerInfo.priorIncidents} prior attacks)`;
+      }
+    }
+    
+    technicalDetails += `\n\nRecommendation:\n• Always verify full address before sending\n• Use address book or ENS names\n• Clear transaction history clutter\n\nConfidence: ${confidence}%`;
+    
     return {
       id: `address-poisoning-${Date.now()}`,
       type: 'ADDRESS_POISONING' as AttackType,
       severity: 'MEDIUM', // Not CRITICAL - wallet is not compromised
       title: '⚠️ Address Poisoning Attack',
-      description: 'No wallet compromise detected. Funds were sent to a look-alike address that previously dusted this wallet.',
-      technicalDetails: `Indicators:\n${indicators.map(i => `• ${i}`).join('\n')}\n\nRecommendation:\n• Always verify full address before sending\n• Use address book or ENS names\n• Clear transaction history clutter\n\nConfidence: ${confidence}%`,
+      description,
+      technicalDetails,
       detectedAt: new Date().toISOString(),
-      relatedAddresses: poisoningCheck.similarAddresses,
-      relatedTransactions: [],
+      relatedAddresses: [
+        ...poisoningCheck.similarAddresses,
+        ...(controllerInfo.controllerAddress ? [controllerInfo.controllerAddress] : []),
+      ],
+      relatedTransactions: sentToPoisonedTx ? [sentToPoisonedTx.hash] : [],
       ongoingRisk: false, // Wallet is NOT compromised
       attackerInfo: {
-        address: poisoningCheck.similarAddresses[0] || 'unknown',
+        address: controllerInfo.controllerAddress || poisoningCheck.similarAddresses[0] || 'unknown',
         type: 'PHISHING', // Closest match in AttackType - this is social engineering
         confidence,
         evidenceCount: indicators.length,
@@ -4115,6 +4209,14 @@ export class EVMAnalyzer {
         'No automated draining',
         'Wallet remains secure',
       ],
+      
+      // Controller detection results (for enhanced UI)
+      controllerDetection: controllerInfo.flowTrace ? {
+        poisonedAddress: poisoningCheck.similarAddresses[0],
+        controllerAddress: controllerInfo.controllerAddress,
+        priorIncidents: controllerInfo.priorIncidents,
+        flowTrace: controllerInfo.flowTrace,
+      } : undefined,
     };
   }
 }

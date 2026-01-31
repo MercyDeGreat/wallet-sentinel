@@ -1151,6 +1151,17 @@ export interface DetectedThreat {
   // These fields support the "Why Securnex Flagged This" feature
   positiveSignals?: string[];             // Indicators that were used for classification
   ruledOutSignals?: string[];             // Indicators that were explicitly ruled out
+  
+  // ============================================
+  // CONTROLLER DETECTION (Address Poisoning)
+  // ============================================
+  // Results from post-loss fund flow tracing
+  controllerDetection?: {
+    poisonedAddress: string;              // The decoy address that received victim funds
+    controllerAddress?: string;           // The attacker's controller wallet
+    priorIncidents?: number;              // Number of prior attacks by this controller
+    flowTrace?: unknown;                  // Full FlowTrace object (from controller-detection.ts)
+  };
 }
 
 export interface TokenApproval {

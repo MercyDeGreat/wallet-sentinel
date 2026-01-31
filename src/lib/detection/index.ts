@@ -155,4 +155,5 @@ export * from './three-state-classifier';
 // - Always explain uncertainty
 // - Classification ≠ Detection
 export * from '../classification';
+export * from './controller-detection';
 export type { AttackClassification } from '../classification/types';
