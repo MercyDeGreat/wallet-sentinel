@@ -2928,6 +2928,60 @@ export class EVMAnalyzer {
     return '0';
   }
 
+  // ============================================
+  // FETCH POISONED ADDRESS TRANSACTIONS
+  // ============================================
+  // Used by controller detection to trace where funds went after 
+  // being sent to a poisoned (look-alike) address
+  
+  private async fetchPoisonedAddressTransactions(poisonedAddress: string): Promise<{
+    hash: string;
+    from: string;
+    to: string;
+    value: string;
+    timestamp: number;
+  }[]> {
+    try {
+      console.log(`[fetchPoisonedAddressTransactions] Fetching txs for ${poisonedAddress}`);
+      
+      // Fetch transactions from Etherscan API
+      const url = `${this.explorerApiUrl}?module=account&action=txlist&address=${poisonedAddress}&startblock=0&endblock=99999999&sort=asc&apikey=${this.explorerApiKey}`;
+      
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(15000),
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      const data = await response.json();
+      
+      if (data.status !== '1' || !Array.isArray(data.result)) {
+        console.log(`[fetchPoisonedAddressTransactions] API returned no results`);
+        return [];
+      }
+      
+      // Filter to only outgoing transactions (from the poisoned address)
+      const outgoingTxs = data.result
+        .filter((tx: { from: string; isError: string }) => 
+          tx.from?.toLowerCase() === poisonedAddress.toLowerCase() &&
+          tx.isError !== '1'
+        )
+        .map((tx: { hash: string; from: string; to: string; value: string; timeStamp: string }) => ({
+          hash: tx.hash,
+          from: tx.from?.toLowerCase() || '',
+          to: tx.to?.toLowerCase() || '',
+          value: tx.value || '0',
+          timestamp: parseInt(tx.timeStamp) || 0,
+        }));
+      
+      console.log(`[fetchPoisonedAddressTransactions] Found ${outgoingTxs.length} outgoing transactions`);
+      
+      return outgoingTxs;
+    } catch (error) {
+      console.warn(`[fetchPoisonedAddressTransactions] Error fetching:`, error);
+      return [];
+    }
+  }
+
   private async fetchApprovalEvents(address: string): Promise<ApprovalEvent[]> {
     try {
       let baseUrl = '';
@@ -4106,6 +4160,15 @@ export class EVMAnalyzer {
     
     if (sentToPoisonedTx && poisoningCheck.similarAddresses.length > 0) {
       try {
+        const poisonedAddress = poisoningCheck.similarAddresses[0];
+        console.log(`[detectAddressPoisoning] Fetching transactions for poisoned address: ${poisonedAddress}`);
+        
+        // ============================================
+        // FETCH POISONED ADDRESS TRANSACTIONS
+        // ============================================
+        // To trace where funds went, we need the poisoned address's transaction history
+        const poisonedTxs = await this.fetchPoisonedAddressTransactions(poisonedAddress);
+        
         // Create controller detection engine
         const controllerEngine = createControllerDetectionEngine({
           maxHops: 3,
@@ -4113,25 +4176,34 @@ export class EVMAnalyzer {
           highForwardingRatioThreshold: 0.9,
         });
         
-        // Convert transactions to format expected by controller engine
-        const txsForTracing = transactions.map(tx => ({
-          hash: tx.hash,
-          from: tx.from?.toLowerCase() || '',
-          to: tx.to?.toLowerCase() || '',
-          value: tx.value || '0',
-          timestamp: tx.timestamp,
-        }));
+        // Combine victim's transactions with poisoned address transactions
+        const allTxsForTracing = [
+          // Victim's transactions
+          ...transactions.map(tx => ({
+            hash: tx.hash,
+            from: tx.from?.toLowerCase() || '',
+            to: tx.to?.toLowerCase() || '',
+            value: tx.value || '0',
+            timestamp: tx.timestamp,
+          })),
+          // Poisoned address transactions
+          ...poisonedTxs,
+        ];
+        
+        console.log(`[detectAddressPoisoning] Tracing ${allTxsForTracing.length} total transactions`);
         
         // Trace the flow from poisoned address
         const flowTrace = await controllerEngine.traceAndDetectControllers(
-          poisoningCheck.similarAddresses[0], // poisoned address
+          poisonedAddress,
           userAddress,
           sentToPoisonedTx.hash,
           sentToPoisonedTx.value || '0',
-          txsForTracing
+          allTxsForTracing
         );
         
         controllerInfo.flowTrace = flowTrace;
+        
+        console.log(`[detectAddressPoisoning] Flow trace: ${flowTrace.hops.length} hops, ${flowTrace.controllerCandidates.length} candidates`);
         
         if (flowTrace.primaryController) {
           controllerInfo.controllerAddress = flowTrace.primaryController.address;
@@ -4143,6 +4215,12 @@ export class EVMAnalyzer {
           if (controllerInfo.priorIncidents) {
             indicators.push(`Controller involved in ${controllerInfo.priorIncidents} prior attacks`);
           }
+        } else if (flowTrace.hops.length > 0) {
+          // If no primary controller but we have hops, use the last destination
+          const lastHop = flowTrace.hops[flowTrace.hops.length - 1];
+          controllerInfo.controllerAddress = lastHop.to;
+          console.log(`[detectAddressPoisoning] Using last hop destination as controller: ${controllerInfo.controllerAddress}`);
+          indicators.push(`Funds forwarded to: ${controllerInfo.controllerAddress.slice(0, 10)}...`);
         }
       } catch (error) {
         console.warn(`[detectAddressPoisoning] Controller detection failed:`, error);
