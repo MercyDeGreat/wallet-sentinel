@@ -32,6 +32,8 @@ const attackTypeInfo: Record<AttackType, { icon: React.ElementType; color: strin
   COMPROMISED_PROGRAM_AUTHORITY: { icon: Code, color: 'text-cyan-400', label: 'Compromised Program' },
   ROGUE_CONTRACT_INTERACTION: { icon: Layers, color: 'text-pink-400', label: 'Rogue Contract' },
   MEV_SANDWICH_DRAIN: { icon: Layers, color: 'text-amber-400', label: 'MEV Sandwich' },
+  ADDRESS_POISONING: { icon: Shield, color: 'text-yellow-500', label: 'Address Poisoning' },
+  SWEEPER_BOT: { icon: AlertCircle, color: 'text-red-600', label: 'Sweeper Bot' },
   UNKNOWN: { icon: Shield, color: 'text-gray-400', label: 'Unknown Threat' },
 };
 

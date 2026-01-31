@@ -735,6 +735,8 @@ export type AttackType =
   | 'COMPROMISED_PROGRAM_AUTHORITY'
   | 'ROGUE_CONTRACT_INTERACTION'
   | 'MEV_SANDWICH_DRAIN'
+  | 'ADDRESS_POISONING'  // Social engineering attack - user tricked into sending to look-alike address
+  | 'SWEEPER_BOT'        // Private key compromised - automated draining of incoming funds
   | 'UNKNOWN';
 
 // Risk severity levels
@@ -1142,6 +1144,13 @@ export interface DetectedThreat {
   // Display override for historical threats
   displayLabel?: string;                  // Override label for UI (e.g., "Previously revoked – no active risk")
   excludeFromRiskScore?: boolean;         // True if this should NOT affect risk score
+  
+  // ============================================
+  // UX EXPLAINER LAYER
+  // ============================================
+  // These fields support the "Why Securnex Flagged This" feature
+  positiveSignals?: string[];             // Indicators that were used for classification
+  ruledOutSignals?: string[];             // Indicators that were explicitly ruled out
 }
 
 export interface TokenApproval {

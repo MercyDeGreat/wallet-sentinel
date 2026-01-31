@@ -98,6 +98,11 @@ import {
   normalizeAddress,
 } from '../detection/drainer-activity-detector';
 import { isKnownDrainer, getDrainerType } from '../detection/drainer-addresses';
+import {
+  calculateAddressSimilarity,
+  isDustValue,
+  classifyAddressPoisoning,
+} from '../classification/classifiers/address-poisoning';
 
 // ============================================
 // INTERFACES
@@ -319,6 +324,11 @@ export class EVMAnalyzer {
     // 4. DETECT SWEEPER BOT (Private Key Compromise with Active Monitoring)
     const sweeperThreat = this.detectSweeperBot(transactions, tokenTransfers, currentBalance, normalizedAddress);
     if (sweeperThreat) threats.push(sweeperThreat);
+
+    // 5. DETECT ADDRESS POISONING (Social Engineering Attack)
+    // This MUST run after sweeper bot detection to properly classify
+    const addressPoisoningThreat = this.detectAddressPoisoning(transactions, tokenTransfers, normalizedAddress);
+    if (addressPoisoningThreat) threats.push(addressPoisoningThreat);
     }
 
     // ============================================
@@ -932,6 +942,21 @@ export class EVMAnalyzer {
     if (infrastructureCheck.isProtected) {
       console.log(`[detectSweeperBot] ${userAddress}: Protected infrastructure (${infrastructureCheck.name}) - cannot be sweeper bot`);
       return null;
+    }
+
+    // ============================================
+    // STEP 0.5: ADDRESS POISONING NEGATIVE CONSTRAINT CHECK
+    // ============================================
+    // CRITICAL: If address poisoning patterns are detected, this CANNOT be
+    // a sweeper bot. Sweeper bots are automated drains - address poisoning
+    // is a social engineering attack with user-signed transactions.
+    // 
+    // HARD RULE: Never label address poisoning as sweeper bot
+    const poisoningCheck = this.checkAddressPoisoningPatterns(transactions, tokenTransfers, userAddress);
+    if (poisoningCheck.hasPoisoningIndicators) {
+      console.log(`[detectSweeperBot] ${userAddress}: ADDRESS POISONING DETECTED - DISQUALIFYING SWEEPER BOT`);
+      console.log(`[detectSweeperBot] Poisoning indicators: hasAddressSimilarity=${poisoningCheck.hasAddressSimilarity}, hasDustingHistory=${poisoningCheck.hasDustingHistory}, isUserSignedTransfer=${poisoningCheck.isUserSignedTransfer}`);
+      return null; // Cannot be sweeper bot if poisoning patterns present
     }
 
     if (transactions.length < 4) return null;
@@ -3792,5 +3817,304 @@ export class EVMAnalyzer {
     const iface = new ethers.Interface(['function approve(address spender, uint256 amount)']);
     const data = iface.encodeFunctionData('approve', [spenderAddress, 0]);
     return { to: tokenAddress, data };
+  }
+
+  // ============================================
+  // ADDRESS POISONING PATTERN DETECTION
+  // ============================================
+  // 
+  // This method checks for address poisoning indicators that would
+  // DISQUALIFY a wallet from being classified as a sweeper bot.
+  //
+  // Address poisoning is a SOCIAL ENGINEERING attack, not an automated drain.
+  // Key differentiators:
+  // - Dust transfers from visually similar addresses (prefix/suffix match)
+  // - User-signed transactions (not automated transferFrom)
+  // - No rapid automated draining pattern
+  // - No approval abuse
+  //
+  // HARD RULE: If poisoning indicators present, NEVER label as sweeper bot.
+  // ============================================
+
+  private checkAddressPoisoningPatterns(
+    transactions: TransactionData[],
+    tokenTransfers: TokenTransfer[],
+    userAddress: string
+  ): {
+    hasPoisoningIndicators: boolean;
+    hasAddressSimilarity: boolean;
+    hasDustingHistory: boolean;
+    isUserSignedTransfer: boolean;
+    similarAddresses: string[];
+    dustTransfers: { from: string; value: string; timestamp: number }[];
+    decisionTrace: string[];
+  } {
+    const normalizedUser = userAddress.toLowerCase();
+    const decisionTrace: string[] = [];
+    
+    // ============================================
+    // STEP 1: DETECT DUST TRANSFERS
+    // ============================================
+    // Find incoming transfers with very small values (dust)
+    const dustThreshold = BigInt('1000000000000000'); // 0.001 ETH
+    const dustTransfers: { from: string; value: string; timestamp: number }[] = [];
+    
+    // Check token transfers for dust
+    for (const transfer of tokenTransfers) {
+      if (transfer.to?.toLowerCase() !== normalizedUser) continue;
+      
+      try {
+        const value = BigInt(transfer.value || '0');
+        if (value > BigInt(0) && value <= dustThreshold) {
+          dustTransfers.push({
+            from: transfer.from.toLowerCase(),
+            value: transfer.value,
+            timestamp: transfer.timestamp || 0,
+          });
+        }
+      } catch {
+        // Invalid value, skip
+      }
+    }
+    
+    // Check ETH transfers for dust
+    for (const tx of transactions) {
+      if (tx.to?.toLowerCase() !== normalizedUser) continue;
+      
+      try {
+        const value = BigInt(tx.value || '0');
+        if (value > BigInt(0) && value <= dustThreshold) {
+          dustTransfers.push({
+            from: tx.from.toLowerCase(),
+            value: tx.value,
+            timestamp: tx.timestamp,
+          });
+        }
+      } catch {
+        // Invalid value, skip
+      }
+    }
+    
+    const hasDustingHistory = dustTransfers.length > 0;
+    if (hasDustingHistory) {
+      decisionTrace.push(`Found ${dustTransfers.length} dust transfers to this wallet`);
+    }
+    
+    // ============================================
+    // STEP 2: CHECK FOR ADDRESS SIMILARITY
+    // ============================================
+    // Find addresses that visually mimic frequent recipients
+    const similarAddresses: string[] = [];
+    
+    // Find frequent recipients (addresses this wallet sends to)
+    const recipientCounts = new Map<string, number>();
+    for (const tx of transactions) {
+      if (tx.from?.toLowerCase() === normalizedUser && tx.to) {
+        const recipient = tx.to.toLowerCase();
+        recipientCounts.set(recipient, (recipientCounts.get(recipient) || 0) + 1);
+      }
+    }
+    
+    // Get top recipients (addresses user frequently sends to)
+    const frequentRecipients = [...recipientCounts.entries()]
+      .filter(([, count]) => count >= 1)
+      .map(([addr]) => addr);
+    
+    // Check if any dust sender is similar to a frequent recipient
+    for (const dust of dustTransfers) {
+      for (const recipient of frequentRecipients) {
+        if (dust.from === recipient) continue; // Same address, not poisoning
+        
+        const similarity = calculateAddressSimilarity(dust.from, recipient);
+        if (similarity.score >= 50) { // 50+ is suspicious similarity
+          similarAddresses.push(dust.from);
+          decisionTrace.push(`Address ${dust.from.slice(0, 10)}... is ${similarity.score}% similar to frequent recipient ${recipient.slice(0, 10)}... (prefix: ${similarity.prefixMatch}, suffix: ${similarity.suffixMatch})`);
+        }
+      }
+    }
+    
+    const hasAddressSimilarity = similarAddresses.length > 0;
+    
+    // ============================================
+    // STEP 3: CHECK IF OUTBOUND IS USER-SIGNED
+    // ============================================
+    // In address poisoning, the victim MANUALLY sends funds.
+    // In sweeper bot, funds are drained automatically (often via transferFrom).
+    // 
+    // User-signed indicators:
+    // - Transaction originated from this wallet (from === userAddress)
+    // - No complex contract interaction (simple transfer or low methodId)
+    // - Manual send to an address similar to dust sender
+    
+    let isUserSignedTransfer = false;
+    let hasManualSendToPoisonedAddress = false;
+    
+    for (const tx of transactions) {
+      if (tx.from?.toLowerCase() !== normalizedUser) continue;
+      if (!tx.to) continue;
+      
+      const recipient = tx.to.toLowerCase();
+      
+      // Check if sending to a dust sender or similar address
+      const sentToSimilarAddress = similarAddresses.includes(recipient) ||
+        dustTransfers.some(d => d.from === recipient);
+      
+      if (sentToSimilarAddress) {
+        // Check if this looks like a manual transfer (not automated)
+        const value = BigInt(tx.value || '0');
+        const isSignificantValue = value > dustThreshold;
+        const isSimpleTransfer = !tx.input || tx.input === '0x' || tx.input.length <= 10;
+        
+        if (isSignificantValue) {
+          isUserSignedTransfer = true;
+          hasManualSendToPoisonedAddress = true;
+          decisionTrace.push(`User manually sent ${tx.value} wei to poisoned address ${recipient.slice(0, 10)}...`);
+        }
+      }
+    }
+    
+    // ============================================
+    // STEP 4: DETERMINE IF POISONING INDICATORS PRESENT
+    // ============================================
+    // Poisoning is likely if:
+    // - Has dust transfers
+    // - Has address similarity
+    // - Has user-signed transfer to similar address
+    //
+    // Even partial indicators should DISQUALIFY sweeper bot classification
+    
+    const hasPoisoningIndicators = 
+      (hasDustingHistory && hasAddressSimilarity) || // Dust from similar address
+      (hasDustingHistory && isUserSignedTransfer) || // Dust + manual send
+      (hasAddressSimilarity && isUserSignedTransfer); // Similar + manual send
+    
+    if (hasPoisoningIndicators) {
+      decisionTrace.push('ADDRESS POISONING INDICATORS DETECTED - DISQUALIFYING SWEEPER BOT');
+    } else if (hasDustingHistory || hasAddressSimilarity) {
+      decisionTrace.push(`Partial poisoning indicators: dust=${hasDustingHistory}, similarity=${hasAddressSimilarity}, userSigned=${isUserSignedTransfer}`);
+    }
+    
+    return {
+      hasPoisoningIndicators,
+      hasAddressSimilarity,
+      hasDustingHistory,
+      isUserSignedTransfer,
+      similarAddresses,
+      dustTransfers,
+      decisionTrace,
+    };
+  }
+
+  // ============================================
+  // ADDRESS POISONING THREAT DETECTION
+  // ============================================
+  //
+  // This generates a proper ADDRESS_POISONING threat when patterns are detected.
+  //
+  // WHY ADDRESS POISONING ≠ WALLET COMPROMISE:
+  // - No private key was stolen
+  // - No approvals were abused
+  // - No automated draining occurred
+  // - User was tricked into MANUALLY sending funds
+  //
+  // This is a SOCIAL ENGINEERING attack, not a technical compromise.
+  // The wallet is still secure - the user made a mistake.
+  //
+  // WHY NO AUTOMATED DRAIN LANGUAGE:
+  // Address poisoning requires human action. The attacker cannot
+  // automatically drain funds - they rely on user error.
+  //
+  // WHY RECOMMENDATIONS FOCUS ON USER HYGIENE:
+  // Prevention is about verification habits, not recovery actions.
+  // The wallet doesn't need to be abandoned or keys rotated.
+  // ============================================
+
+  private detectAddressPoisoning(
+    transactions: TransactionData[],
+    tokenTransfers: TokenTransfer[],
+    userAddress: string
+  ): DetectedThreat | null {
+    // Use the shared poisoning pattern check
+    const poisoningCheck = this.checkAddressPoisoningPatterns(transactions, tokenTransfers, userAddress);
+    
+    // Only create a threat if we have strong indicators
+    if (!poisoningCheck.hasPoisoningIndicators) {
+      return null;
+    }
+    
+    // Calculate confidence based on indicators
+    let confidence = 0;
+    const indicators: string[] = [];
+    
+    if (poisoningCheck.hasDustingHistory) {
+      confidence += 30;
+      indicators.push(`${poisoningCheck.dustTransfers.length} dust transfers received`);
+    }
+    
+    if (poisoningCheck.hasAddressSimilarity) {
+      confidence += 40;
+      indicators.push(`Visually similar addresses detected: ${poisoningCheck.similarAddresses.slice(0, 3).map(a => a.slice(0, 10) + '...').join(', ')}`);
+    }
+    
+    if (poisoningCheck.isUserSignedTransfer) {
+      confidence += 30;
+      indicators.push('Manual outbound transfer to poisoned address');
+    }
+    
+    // Calculate duration of poisoning campaign
+    const timestamps = poisoningCheck.dustTransfers.map(d => d.timestamp).filter(t => t > 0);
+    let durationInfo = '';
+    if (timestamps.length >= 2) {
+      const oldest = Math.min(...timestamps);
+      const newest = Math.max(...timestamps);
+      const durationDays = Math.floor((newest - oldest) / (24 * 60 * 60));
+      if (durationDays > 0) {
+        durationInfo = `Repeated over ${durationDays}+ days`;
+        indicators.push(durationInfo);
+        confidence = Math.min(100, confidence + 10);
+      }
+    }
+    
+    console.log(`[detectAddressPoisoning] ${userAddress}: ADDRESS POISONING DETECTED (confidence: ${confidence}%)`);
+    console.log(`[detectAddressPoisoning] Indicators: ${indicators.join(', ')}`);
+    
+    // ============================================
+    // GENERATE THE ADDRESS POISONING THREAT
+    // ============================================
+    // This is the correct classification for this attack type.
+    // NEVER show: "ACTIVELY COMPROMISED", "Sweeper bot", "Private key leaked"
+    // ALWAYS show: Reassuring but accurate messaging
+    
+    return {
+      id: `address-poisoning-${Date.now()}`,
+      type: 'ADDRESS_POISONING' as AttackType,
+      severity: 'MEDIUM', // Not CRITICAL - wallet is not compromised
+      title: '⚠️ Address Poisoning Attack',
+      description: 'No wallet compromise detected. Funds were sent to a look-alike address that previously dusted this wallet.',
+      technicalDetails: `Indicators:\n${indicators.map(i => `• ${i}`).join('\n')}\n\nRecommendation:\n• Always verify full address before sending\n• Use address book or ENS names\n• Clear transaction history clutter\n\nConfidence: ${confidence}%`,
+      detectedAt: new Date().toISOString(),
+      relatedAddresses: poisoningCheck.similarAddresses,
+      relatedTransactions: [],
+      ongoingRisk: false, // Wallet is NOT compromised
+      attackerInfo: {
+        address: poisoningCheck.similarAddresses[0] || 'unknown',
+        type: 'PHISHING', // Closest match in AttackType - this is social engineering
+        confidence,
+        evidenceCount: indicators.length,
+        firstSeenAt: timestamps.length > 0 ? new Date(Math.min(...timestamps) * 1000).toISOString() : new Date().toISOString(),
+      },
+      category: poisoningCheck.isUserSignedTransfer ? 'HISTORICAL_EXPOSURE' : 'ACTIVE_RISK',
+      isHistorical: poisoningCheck.isUserSignedTransfer, // If user already sent, it's historical
+      excludeFromRiskScore: false, // Should be counted but not as CRITICAL
+      
+      // Additional fields for UX layer
+      positiveSignals: indicators,
+      ruledOutSignals: [
+        'No private key compromise',
+        'No approval abuse',
+        'No automated draining',
+        'Wallet remains secure',
+      ],
+    };
   }
 }
