@@ -4248,14 +4248,28 @@ export class EVMAnalyzer {
     } = {};
     
     // Find if victim sent to a poisoned address
-    const sentToPoisonedTx = transactions.find(tx => 
-      tx.from?.toLowerCase() === userAddress.toLowerCase() &&
-      poisoningCheck.similarAddresses.includes(tx.to?.toLowerCase() || '')
-    );
+    // Check BOTH similarAddresses AND dustTransfer senders (they're the poisoned addresses)
+    const dustSenders = poisoningCheck.dustTransfers.map(d => d.from.toLowerCase());
+    const allPoisonedAddresses = [...new Set([...poisoningCheck.similarAddresses, ...dustSenders])];
     
-    if (sentToPoisonedTx && poisoningCheck.similarAddresses.length > 0) {
+    console.log(`[detectAddressPoisoning] Looking for tx to poisoned addresses: ${allPoisonedAddresses.slice(0, 3).map(a => a.slice(0, 12) + '...').join(', ')}`);
+    
+    const sentToPoisonedTx = transactions.find(tx => {
+      if (tx.from?.toLowerCase() !== userAddress.toLowerCase()) return false;
+      const toAddr = tx.to?.toLowerCase() || '';
+      const isPoisoned = allPoisonedAddresses.includes(toAddr);
+      const value = BigInt(tx.value || '0');
+      const isSignificant = value > BigInt('1000000000000000'); // > 0.001 ETH
+      if (isPoisoned && isSignificant) {
+        console.log(`[detectAddressPoisoning] Found tx to poisoned address: ${toAddr.slice(0, 12)}... value: ${tx.value}`);
+      }
+      return isPoisoned && isSignificant;
+    });
+    
+    if (sentToPoisonedTx && allPoisonedAddresses.length > 0) {
       try {
-        const poisonedAddress = poisoningCheck.similarAddresses[0];
+        // Use the address the victim actually sent to
+        const poisonedAddress = sentToPoisonedTx.to?.toLowerCase() || allPoisonedAddresses[0];
         console.log(`[detectAddressPoisoning] Fetching transactions for poisoned address: ${poisonedAddress}`);
         
         // ============================================
